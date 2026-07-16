@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = ["crates/ascapi", "crates/cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Seto Elkahfi <seto@smbcloud.xyz>"]
+license = "Apache-2.0"
+repository = "https://github.com/smbcloudXYZ/smbcloud-ascapi"
+
+[workspace.dependencies]
+smbcloud-ascapi = { version = "0.1.0", path = "crates/ascapi" }
+anyhow = "1"
+clap = "4"
+jsonwebtoken = "9"
+reqwest = { version = "0.12", default-features = false }
+serde = "1"
+serde_json = "1"
+thiserror = "2.0"
+tokio = "1"

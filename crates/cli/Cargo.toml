@@ -1,0 +1,20 @@
+[package]
+name = "smbcloud-ascapi-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CLI for adding/updating App Store Connect app metadata, built on smbcloud-ascapi."
+
+[[bin]]
+name = "ascapi"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true, features = ["derive", "env"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+smbcloud-ascapi = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

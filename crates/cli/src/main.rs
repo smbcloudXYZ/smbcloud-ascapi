@@ -1,0 +1,729 @@
+use anyhow::{Context, Result};
+use clap::{Parser, Subcommand, ValueEnum};
+use smbcloud_ascapi::app::AppUpdateAttributes;
+use smbcloud_ascapi::app_info_localization::{
+    AppInfoLocalizationCreateAttributes, AppInfoLocalizationUpdateAttributes,
+};
+use smbcloud_ascapi::app_screenshot_set::{
+    AppScreenshotSetCreateAttributes, ScreenshotDisplayType,
+};
+use smbcloud_ascapi::app_store_version::{AppStoreVersionCreateAttributes, Platform};
+use smbcloud_ascapi::app_store_version_localization::{
+    AppStoreVersionLocalizationCreateAttributes, AppStoreVersionLocalizationFields,
+};
+use smbcloud_ascapi::bundle_id::{BundleIdCreateAttributes, BundleIdPlatform};
+use smbcloud_ascapi::{ApiKey, Client};
+use std::path::PathBuf;
+
+/// Add/update App Store Connect app metadata (apps, app infos, app store
+/// versions, and their localizations) from the terminal or a script.
+#[derive(Parser)]
+#[command(name = "ascapi", version, about)]
+struct Cli {
+    /// App Store Connect API key ID (Users and Access → Integrations → App
+    /// Store Connect API).
+    #[arg(long, env = "ASC_API_KEY")]
+    key_id: String,
+
+    /// App Store Connect API issuer ID (same page as the key).
+    #[arg(long, env = "ASC_ISSUER_ID")]
+    issuer_id: String,
+
+    /// Path to the key's .p8 private key file. Defaults to
+    /// ~/.appstoreconnect/private_keys/AuthKey_<key-id>.p8, matching
+    /// Xcode's own convention.
+    #[arg(long, env = "ASC_PRIVATE_KEY_PATH", global = true)]
+    private_key_path: Option<PathBuf>,
+
+    /// Print the request body that would be sent instead of sending it.
+    /// Only affects commands that create or modify data.
+    #[arg(long, global = true)]
+    dry_run: bool,
+
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Look up apps by bundle ID, or a specific app by its ASC app ID.
+    Apps {
+        #[command(subcommand)]
+        command: AppsCommand,
+    },
+    /// Register or look up bundle identifiers.
+    BundleIds {
+        #[command(subcommand)]
+        command: BundleIdsCommand,
+    },
+    /// Per-platform App Store Version records for an app — create one to
+    /// add a new platform (e.g. visionOS) to an existing app.
+    AppStoreVersions {
+        #[command(subcommand)]
+        command: AppStoreVersionsCommand,
+    },
+    /// Localized name/subtitle for an app's AppInfo.
+    AppInfoLocalizations {
+        #[command(subcommand)]
+        command: AppInfoLocalizationsCommand,
+    },
+    /// Localized description/keywords/etc for an App Store Version.
+    AppStoreVersionLocalizations {
+        #[command(subcommand)]
+        command: AppStoreVersionLocalizationsCommand,
+    },
+    /// Per-device-class screenshot buckets on an App Store Version
+    /// Localization — create one, then add images to it with
+    /// `app-screenshots upload`.
+    AppScreenshotSets {
+        #[command(subcommand)]
+        command: AppScreenshotSetsCommand,
+    },
+    /// Screenshot image binaries within an AppScreenshotSet.
+    AppScreenshots {
+        #[command(subcommand)]
+        command: AppScreenshotsCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum AppsCommand {
+    /// `GET /v1/apps`.
+    List {
+        #[arg(long)]
+        bundle_id: Option<String>,
+    },
+    /// `GET /v1/apps/{id}`.
+    Get { app_id: String },
+    /// `PATCH /v1/apps/{id}`.
+    Update {
+        app_id: String,
+        #[arg(long)]
+        primary_locale: Option<String>,
+    },
+    /// `GET /v1/apps/{id}/appInfos`.
+    Infos { app_id: String },
+    /// `GET /v1/apps/{id}/builds` — newest first, so the
+    /// most recently uploaded build (e.g. after a fixplist re-upload) is
+    /// first. Check `processingState` (VALID/INVALID/PROCESSING/FAILED).
+    Builds { app_id: String },
+}
+
+#[derive(Subcommand)]
+enum BundleIdsCommand {
+    /// `GET /v1/bundleIds`.
+    List {
+        #[arg(long)]
+        identifier: Option<String>,
+    },
+    /// `POST /v1/bundleIds`.
+    Create {
+        #[arg(long)]
+        identifier: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long, value_enum, default_value_t = CliBundleIdPlatform::Ios)]
+        platform: CliBundleIdPlatform,
+    },
+}
+
+#[derive(Subcommand)]
+enum AppStoreVersionsCommand {
+    /// `GET /v1/apps/{app_id}/appStoreVersions`.
+    List {
+        app_id: String,
+        #[arg(long, value_enum)]
+        platform: Option<CliPlatform>,
+    },
+    /// `GET /v1/appStoreVersions/{id}`.
+    Get { id: String },
+    /// `POST /v1/appStoreVersions`.
+    Create {
+        app_id: String,
+        #[arg(long, value_enum)]
+        platform: CliPlatform,
+        #[arg(long)]
+        version_string: String,
+        #[arg(long)]
+        copyright: Option<String>,
+    },
+    /// `DELETE /v1/appStoreVersions/{id}`.
+    Delete { id: String },
+    /// `PATCH /v1/appStoreVersions/{id}` — attach a `Build` (see
+    /// `apps builds`) to this version, e.g. after fixing an
+    /// `INVALID_BINARY` version with a re-uploaded build.
+    SetBuild {
+        id: String,
+        #[arg(long)]
+        build_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum AppInfoLocalizationsCommand {
+    List {
+        app_info_id: String,
+    },
+    Create {
+        app_info_id: String,
+        #[arg(long)]
+        locale: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        subtitle: Option<String>,
+    },
+    Update {
+        id: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        subtitle: Option<String>,
+    },
+    Delete {
+        id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum AppStoreVersionLocalizationsCommand {
+    List {
+        app_store_version_id: String,
+    },
+    Create {
+        app_store_version_id: String,
+        #[arg(long)]
+        locale: String,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long)]
+        keywords: Option<String>,
+        #[arg(long)]
+        whats_new: Option<String>,
+        #[arg(long)]
+        promotional_text: Option<String>,
+        #[arg(long)]
+        marketing_url: Option<String>,
+        #[arg(long)]
+        support_url: Option<String>,
+    },
+    Update {
+        id: String,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long)]
+        keywords: Option<String>,
+        #[arg(long)]
+        whats_new: Option<String>,
+        #[arg(long)]
+        promotional_text: Option<String>,
+        #[arg(long)]
+        marketing_url: Option<String>,
+        #[arg(long)]
+        support_url: Option<String>,
+    },
+    Delete {
+        id: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum AppScreenshotSetsCommand {
+    /// `GET /v1/appStoreVersionLocalizations/{id}/appScreenshotSets`.
+    List {
+        app_store_version_localization_id: String,
+    },
+    /// `POST /v1/appScreenshotSets`.
+    Create {
+        app_store_version_localization_id: String,
+        #[arg(long, value_enum)]
+        display_type: CliScreenshotDisplayType,
+    },
+    /// `DELETE /v1/appScreenshotSets/{id}`.
+    Delete { id: String },
+}
+
+#[derive(Subcommand)]
+enum AppScreenshotsCommand {
+    /// `GET /v1/appScreenshotSets/{id}/appScreenshots`.
+    List { app_screenshot_set_id: String },
+    /// Reserve, PUT, and commit an image file in one call — the full
+    /// `POST /v1/appScreenshots` → upload → `PATCH …uploaded:true` flow.
+    Upload {
+        app_screenshot_set_id: String,
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// `DELETE /v1/appScreenshots/{id}`.
+    Delete { id: String },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliScreenshotDisplayType {
+    AppleVisionPro,
+    Iphone67,
+    Iphone65,
+    Iphone61,
+    Iphone58,
+    Iphone55,
+    Iphone47,
+    Iphone40,
+    Iphone35,
+    IpadPro3Gen129,
+    IpadPro3Gen11,
+    IpadPro129,
+    Ipad105,
+    Ipad97,
+    Desktop,
+    AppleTv,
+    WatchUltra,
+    WatchSeries10,
+    WatchSeries7,
+    WatchSeries4,
+    WatchSeries3,
+}
+
+impl From<CliScreenshotDisplayType> for ScreenshotDisplayType {
+    fn from(value: CliScreenshotDisplayType) -> Self {
+        match value {
+            CliScreenshotDisplayType::AppleVisionPro => ScreenshotDisplayType::AppleVisionPro,
+            CliScreenshotDisplayType::Iphone67 => ScreenshotDisplayType::Iphone67,
+            CliScreenshotDisplayType::Iphone65 => ScreenshotDisplayType::Iphone65,
+            CliScreenshotDisplayType::Iphone61 => ScreenshotDisplayType::Iphone61,
+            CliScreenshotDisplayType::Iphone58 => ScreenshotDisplayType::Iphone58,
+            CliScreenshotDisplayType::Iphone55 => ScreenshotDisplayType::Iphone55,
+            CliScreenshotDisplayType::Iphone47 => ScreenshotDisplayType::Iphone47,
+            CliScreenshotDisplayType::Iphone40 => ScreenshotDisplayType::Iphone40,
+            CliScreenshotDisplayType::Iphone35 => ScreenshotDisplayType::Iphone35,
+            CliScreenshotDisplayType::IpadPro3Gen129 => ScreenshotDisplayType::IpadPro3Gen129,
+            CliScreenshotDisplayType::IpadPro3Gen11 => ScreenshotDisplayType::IpadPro3Gen11,
+            CliScreenshotDisplayType::IpadPro129 => ScreenshotDisplayType::IpadPro129,
+            CliScreenshotDisplayType::Ipad105 => ScreenshotDisplayType::Ipad105,
+            CliScreenshotDisplayType::Ipad97 => ScreenshotDisplayType::Ipad97,
+            CliScreenshotDisplayType::Desktop => ScreenshotDisplayType::Desktop,
+            CliScreenshotDisplayType::AppleTv => ScreenshotDisplayType::AppleTv,
+            CliScreenshotDisplayType::WatchUltra => ScreenshotDisplayType::WatchUltra,
+            CliScreenshotDisplayType::WatchSeries10 => ScreenshotDisplayType::WatchSeries10,
+            CliScreenshotDisplayType::WatchSeries7 => ScreenshotDisplayType::WatchSeries7,
+            CliScreenshotDisplayType::WatchSeries4 => ScreenshotDisplayType::WatchSeries4,
+            CliScreenshotDisplayType::WatchSeries3 => ScreenshotDisplayType::WatchSeries3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliPlatform {
+    Ios,
+    MacOs,
+    TvOs,
+    VisionOs,
+}
+
+impl From<CliPlatform> for Platform {
+    fn from(value: CliPlatform) -> Self {
+        match value {
+            CliPlatform::Ios => Platform::Ios,
+            CliPlatform::MacOs => Platform::MacOs,
+            CliPlatform::TvOs => Platform::TvOs,
+            CliPlatform::VisionOs => Platform::VisionOs,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliBundleIdPlatform {
+    Ios,
+    MacOs,
+    Universal,
+}
+
+impl From<CliBundleIdPlatform> for BundleIdPlatform {
+    fn from(value: CliBundleIdPlatform) -> Self {
+        match value {
+            CliBundleIdPlatform::Ios => BundleIdPlatform::Ios,
+            CliBundleIdPlatform::MacOs => BundleIdPlatform::MacOs,
+            CliBundleIdPlatform::Universal => BundleIdPlatform::Universal,
+        }
+    }
+}
+
+fn print_json(value: &impl serde::Serialize) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
+}
+
+/// Print `value` and return without sending anything, when `--dry-run` is
+/// set. Every mutating command checks this before touching the network.
+fn dry_run_guard(dry_run: bool, value: &impl serde::Serialize) -> Result<bool> {
+    if dry_run {
+        println!("# dry run — request body that would be sent:");
+        print_json(value)?;
+    }
+    Ok(dry_run)
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    let private_key_path = cli.private_key_path.clone().unwrap_or_else(|| {
+        let mut path = dirs_home();
+        path.push(".appstoreconnect");
+        path.push("private_keys");
+        path.push(format!("AuthKey_{}.p8", cli.key_id));
+        path
+    });
+
+    let api_key = ApiKey::from_p8_file(&cli.key_id, &cli.issuer_id, &private_key_path)
+        .with_context(|| format!("loading App Store Connect API key from {private_key_path:?}"))?;
+    let client = Client::new(api_key);
+
+    match cli.command {
+        Command::Apps { command } => run_apps(&client, command, cli.dry_run).await,
+        Command::BundleIds { command } => run_bundle_ids(&client, command, cli.dry_run).await,
+        Command::AppStoreVersions { command } => {
+            run_app_store_versions(&client, command, cli.dry_run).await
+        }
+        Command::AppInfoLocalizations { command } => {
+            run_app_info_localizations(&client, command, cli.dry_run).await
+        }
+        Command::AppStoreVersionLocalizations { command } => {
+            run_app_store_version_localizations(&client, command, cli.dry_run).await
+        }
+        Command::AppScreenshotSets { command } => {
+            run_app_screenshot_sets(&client, command, cli.dry_run).await
+        }
+        Command::AppScreenshots { command } => {
+            run_app_screenshots(&client, command, cli.dry_run).await
+        }
+    }
+}
+
+fn dirs_home() -> PathBuf {
+    // Avoids pulling in the `dirs` crate for a single lookup; $HOME is set
+    // on every platform this CLI targets (macOS/Linux CI runners).
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+async fn run_apps(client: &Client, command: AppsCommand, dry_run: bool) -> Result<()> {
+    match command {
+        AppsCommand::List { bundle_id } => {
+            let apps = client.list_apps(bundle_id.as_deref()).await?;
+            print_json(&apps)
+        }
+        AppsCommand::Get { app_id } => print_json(&client.get_app(&app_id).await?),
+        AppsCommand::Update {
+            app_id,
+            primary_locale,
+        } => {
+            let attributes = AppUpdateAttributes {
+                primary_locale,
+                content_rights_declaration: None,
+            };
+            if dry_run_guard(dry_run, &attributes)? {
+                return Ok(());
+            }
+            print_json(&client.update_app(&app_id, attributes).await?)
+        }
+        AppsCommand::Infos { app_id } => print_json(&client.list_app_infos(&app_id).await?),
+        AppsCommand::Builds { app_id } => print_json(&client.list_builds(&app_id).await?),
+    }
+}
+
+async fn run_bundle_ids(client: &Client, command: BundleIdsCommand, dry_run: bool) -> Result<()> {
+    match command {
+        BundleIdsCommand::List { identifier } => {
+            print_json(&client.list_bundle_ids(identifier.as_deref()).await?)
+        }
+        BundleIdsCommand::Create {
+            identifier,
+            name,
+            platform,
+        } => {
+            let attributes = BundleIdCreateAttributes {
+                identifier,
+                name,
+                platform: platform.into(),
+            };
+            if dry_run_guard(dry_run, &attributes)? {
+                return Ok(());
+            }
+            print_json(&client.create_bundle_id(attributes).await?)
+        }
+    }
+}
+
+async fn run_app_store_versions(
+    client: &Client,
+    command: AppStoreVersionsCommand,
+    dry_run: bool,
+) -> Result<()> {
+    match command {
+        AppStoreVersionsCommand::List { app_id, platform } => {
+            let versions = client
+                .list_app_store_versions(&app_id, platform.map(Into::into))
+                .await?;
+            print_json(&versions)
+        }
+        AppStoreVersionsCommand::Get { id } => {
+            print_json(&client.get_app_store_version(&id).await?)
+        }
+        AppStoreVersionsCommand::Create {
+            app_id,
+            platform,
+            version_string,
+            copyright,
+        } => {
+            let attributes = AppStoreVersionCreateAttributes {
+                platform: platform.into(),
+                version_string,
+                copyright,
+            };
+            if dry_run_guard(dry_run, &attributes)? {
+                return Ok(());
+            }
+            print_json(&client.create_app_store_version(&app_id, attributes).await?)
+        }
+        AppStoreVersionsCommand::Delete { id } => {
+            if dry_run {
+                println!("# dry run — would DELETE /v1/appStoreVersions/{id}");
+                return Ok(());
+            }
+            client.delete_app_store_version(&id).await?;
+            println!("deleted {id}");
+            Ok(())
+        }
+        AppStoreVersionsCommand::SetBuild { id, build_id } => {
+            if dry_run {
+                println!(
+                    "# dry run — would PATCH /v1/appStoreVersions/{id} relationships.build → {build_id}"
+                );
+                return Ok(());
+            }
+            print_json(&client.set_app_store_version_build(&id, &build_id).await?)
+        }
+    }
+}
+
+async fn run_app_info_localizations(
+    client: &Client,
+    command: AppInfoLocalizationsCommand,
+    dry_run: bool,
+) -> Result<()> {
+    match command {
+        AppInfoLocalizationsCommand::List { app_info_id } => {
+            print_json(&client.list_app_info_localizations(&app_info_id).await?)
+        }
+        AppInfoLocalizationsCommand::Create {
+            app_info_id,
+            locale,
+            name,
+            subtitle,
+        } => {
+            let attributes = AppInfoLocalizationCreateAttributes {
+                locale,
+                name,
+                subtitle,
+                privacy_policy_url: None,
+            };
+            if dry_run_guard(dry_run, &attributes)? {
+                return Ok(());
+            }
+            print_json(
+                &client
+                    .create_app_info_localization(&app_info_id, attributes)
+                    .await?,
+            )
+        }
+        AppInfoLocalizationsCommand::Update { id, name, subtitle } => {
+            let attributes = AppInfoLocalizationUpdateAttributes {
+                name,
+                subtitle,
+                privacy_policy_url: None,
+            };
+            if dry_run_guard(dry_run, &attributes)? {
+                return Ok(());
+            }
+            print_json(&client.update_app_info_localization(&id, attributes).await?)
+        }
+        AppInfoLocalizationsCommand::Delete { id } => {
+            if dry_run {
+                println!("# dry run — would DELETE /v1/appInfoLocalizations/{id}");
+                return Ok(());
+            }
+            client.delete_app_info_localization(&id).await?;
+            println!("deleted {id}");
+            Ok(())
+        }
+    }
+}
+
+async fn run_app_store_version_localizations(
+    client: &Client,
+    command: AppStoreVersionLocalizationsCommand,
+    dry_run: bool,
+) -> Result<()> {
+    match command {
+        AppStoreVersionLocalizationsCommand::List {
+            app_store_version_id,
+        } => print_json(
+            &client
+                .list_app_store_version_localizations(&app_store_version_id)
+                .await?,
+        ),
+        AppStoreVersionLocalizationsCommand::Create {
+            app_store_version_id,
+            locale,
+            description,
+            keywords,
+            whats_new,
+            promotional_text,
+            marketing_url,
+            support_url,
+        } => {
+            let attributes = AppStoreVersionLocalizationCreateAttributes {
+                locale,
+                fields: AppStoreVersionLocalizationFields {
+                    description,
+                    keywords,
+                    whats_new,
+                    promotional_text,
+                    marketing_url,
+                    support_url,
+                },
+            };
+            if dry_run_guard(dry_run, &attributes)? {
+                return Ok(());
+            }
+            print_json(
+                &client
+                    .create_app_store_version_localization(&app_store_version_id, attributes)
+                    .await?,
+            )
+        }
+        AppStoreVersionLocalizationsCommand::Update {
+            id,
+            description,
+            keywords,
+            whats_new,
+            promotional_text,
+            marketing_url,
+            support_url,
+        } => {
+            let fields = AppStoreVersionLocalizationFields {
+                description,
+                keywords,
+                whats_new,
+                promotional_text,
+                marketing_url,
+                support_url,
+            };
+            if dry_run_guard(dry_run, &fields)? {
+                return Ok(());
+            }
+            print_json(
+                &client
+                    .update_app_store_version_localization(&id, fields)
+                    .await?,
+            )
+        }
+        AppStoreVersionLocalizationsCommand::Delete { id } => {
+            if dry_run {
+                println!("# dry run — would DELETE /v1/appStoreVersionLocalizations/{id}");
+                return Ok(());
+            }
+            client.delete_app_store_version_localization(&id).await?;
+            println!("deleted {id}");
+            Ok(())
+        }
+    }
+}
+
+async fn run_app_screenshot_sets(
+    client: &Client,
+    command: AppScreenshotSetsCommand,
+    dry_run: bool,
+) -> Result<()> {
+    match command {
+        AppScreenshotSetsCommand::List {
+            app_store_version_localization_id,
+        } => print_json(
+            &client
+                .list_app_screenshot_sets(&app_store_version_localization_id)
+                .await?,
+        ),
+        AppScreenshotSetsCommand::Create {
+            app_store_version_localization_id,
+            display_type,
+        } => {
+            let attributes = AppScreenshotSetCreateAttributes {
+                screenshot_display_type: display_type.into(),
+            };
+            if dry_run_guard(dry_run, &attributes)? {
+                return Ok(());
+            }
+            print_json(
+                &client
+                    .create_app_screenshot_set(&app_store_version_localization_id, attributes)
+                    .await?,
+            )
+        }
+        AppScreenshotSetsCommand::Delete { id } => {
+            if dry_run {
+                println!("# dry run — would DELETE /v1/appScreenshotSets/{id}");
+                return Ok(());
+            }
+            client.delete_app_screenshot_set(&id).await?;
+            println!("deleted {id}");
+            Ok(())
+        }
+    }
+}
+
+async fn run_app_screenshots(
+    client: &Client,
+    command: AppScreenshotsCommand,
+    dry_run: bool,
+) -> Result<()> {
+    match command {
+        AppScreenshotsCommand::List {
+            app_screenshot_set_id,
+        } => print_json(&client.list_app_screenshots(&app_screenshot_set_id).await?),
+        AppScreenshotsCommand::Upload {
+            app_screenshot_set_id,
+            file,
+        } => {
+            let file_name = file
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .with_context(|| format!("{file:?} has no file name"))?;
+            let bytes = std::fs::read(&file)
+                .with_context(|| format!("reading screenshot file {file:?}"))?;
+
+            if dry_run {
+                println!(
+                    "# dry run — would upload {file_name} ({} bytes) to appScreenshotSet {app_screenshot_set_id}",
+                    bytes.len()
+                );
+                return Ok(());
+            }
+
+            print_json(
+                &client
+                    .upload_app_screenshot(&app_screenshot_set_id, file_name, bytes)
+                    .await?,
+            )
+        }
+        AppScreenshotsCommand::Delete { id } => {
+            if dry_run {
+                println!("# dry run — would DELETE /v1/appScreenshots/{id}");
+                return Ok(());
+            }
+            client.delete_app_screenshot(&id).await?;
+            println!("deleted {id}");
+            Ok(())
+        }
+    }
+}
