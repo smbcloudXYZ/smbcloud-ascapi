@@ -1,8 +1,9 @@
-use crate::client::Client;
-use crate::error::Result;
-use crate::jsonapi::{CreateBody, CreateData, Document, ListDocument, Resource};
+use async_trait::async_trait;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
+use smbcloud_ascapi_core::jsonapi::{CreateBody, CreateData, Document, ListDocument, Resource};
+use smbcloud_ascapi_core::Client;
+use smbcloud_ascapi_core::Result;
 
 pub const RESOURCE_TYPE: &str = "bundleIds";
 
@@ -42,12 +43,28 @@ pub struct BundleIdCreateAttributes {
     pub platform: BundleIdPlatform,
 }
 
-impl Client {
+/// Registered reverse-DNS identifiers.
+///
+/// An extension trait rather than inherent methods, because `Client`
+/// lives in the core crate and Rust only allows inherent impls in the
+/// crate that defines the type. Import it, or the crate's `prelude`,
+/// to call these on a `Client`.
+#[async_trait]
+pub trait BundleIdsApi {
     /// `GET /v1/bundleIds`, optionally filtered to an exact identifier —
     /// check whether a bundle ID is already registered before trying to
     /// create it, or before creating an App Store Version under an app
     /// that uses it.
-    pub async fn list_bundle_ids(&self, filter_identifier: Option<&str>) -> Result<Vec<BundleId>> {
+    async fn list_bundle_ids(&self, filter_identifier: Option<&str>) -> Result<Vec<BundleId>>;
+
+    /// `POST /v1/bundleIds` — registers a new bundle ID with the developer
+    /// account (Certificates, Identifiers & Profiles).
+    async fn create_bundle_id(&self, attributes: BundleIdCreateAttributes) -> Result<BundleId>;
+}
+
+#[async_trait]
+impl BundleIdsApi for Client {
+    async fn list_bundle_ids(&self, filter_identifier: Option<&str>) -> Result<Vec<BundleId>> {
         let mut query = Vec::new();
         if let Some(identifier) = filter_identifier {
             query.push(("filter[identifier]", identifier));
@@ -58,9 +75,7 @@ impl Client {
         Ok(doc.data)
     }
 
-    /// `POST /v1/bundleIds` — registers a new bundle ID with the developer
-    /// account (Certificates, Identifiers & Profiles).
-    pub async fn create_bundle_id(&self, attributes: BundleIdCreateAttributes) -> Result<BundleId> {
+    async fn create_bundle_id(&self, attributes: BundleIdCreateAttributes) -> Result<BundleId> {
         let body = CreateBody {
             data: CreateData {
                 resource_type: RESOURCE_TYPE,

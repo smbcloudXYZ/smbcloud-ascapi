@@ -1,0 +1,24 @@
+[package]
+name = "smbcloud-ascapi-signing"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Apple code signing through App Store Connect: certificates, plus local RSA key pair and CSR generation."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+async-trait = { workspace = true }
+rand = { workspace = true }
+rcgen = { workspace = true }
+reqwest = { workspace = true }
+rsa = { workspace = true, features = ["pem"] }
+serde = { workspace = true, features = ["derive"] }
+smbcloud-ascapi-core = { workspace = true }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

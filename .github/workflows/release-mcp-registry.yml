@@ -1,0 +1,127 @@
+name: MCP Registry Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.1.0)"
+        required: true
+
+# OIDC is how we authenticate to the MCP Registry: the registry trusts a GitHub
+# Actions token issued for this repository, so no long-lived secret is needed.
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    name: Publish the MCP server to the MCP Registry
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Set the release version
+        shell: bash
+        run: |
+          release_version="${{ github.event.inputs.tag }}"
+          release_version="${release_version#v}"
+
+          echo "RELEASE_VERSION=${release_version}" >> "$GITHUB_ENV"
+
+      - name: Check the server name is consistent across the sources
+        shell: bash
+        run: |
+          server_name="$(jq -r '.name' server.json)"
+          echo "Server name: ${server_name}"
+
+          # The registry proves ownership by fetching the published crate and
+          # finding this marker in its README, so the marker has to be in the
+          # README of the crate named in server.json's packages — the CLI, not
+          # the library.
+          grep -q "mcp-name: ${server_name}" crates/cli/README.md
+          grep -q "mcp-name: ${server_name}" README.md
+
+      - name: Check the crate version matches the release
+        shell: bash
+        run: |
+          workspace_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          if [ "${workspace_version}" != "${RELEASE_VERSION}" ]; then
+            echo "Workspace version ${workspace_version} does not match release version ${RELEASE_VERSION}." >&2
+            exit 1
+          fi
+
+      - name: Set the release version in server metadata
+        shell: bash
+        run: |
+          jq --arg v "${RELEASE_VERSION}" \
+            '.version = $v | .packages |= map(.version = $v)' \
+            server.json > server.tmp
+          mv server.tmp server.json
+          cat server.json
+
+      - name: Verify the published crate carries the ownership marker
+        shell: bash
+        run: |
+          # Checking the source tree is not enough: a crate published before
+          # the marker landed will still be missing it, and the registry reads
+          # the published artifact, not this checkout. The comparison is
+          # case-sensitive.
+          server_name="$(jq -r '.name' server.json)"
+          crate="$(jq -r '.packages[0].identifier' server.json)"
+
+          # crates.io indexes a few seconds to a few minutes after publish, and
+          # this workflow may run while the crate release is still in flight.
+          for attempt in $(seq 1 20); do
+            if curl -fsSL -H "User-Agent: smbcloudXYZ/smbcloud-ascapi release-workflow" \
+              "https://crates.io/api/v1/crates/${crate}/${RELEASE_VERSION}" >/dev/null; then
+              echo "${crate} ${RELEASE_VERSION} is indexed on crates.io."
+              break
+            fi
+            if [ "${attempt}" -eq 20 ]; then
+              echo "${crate} ${RELEASE_VERSION} is still not indexed on crates.io after 10 minutes." >&2
+              exit 1
+            fi
+            echo "Waiting for crates.io to index ${crate} ${RELEASE_VERSION} (attempt ${attempt}/20)..."
+            sleep 30
+          done
+
+          curl -fsSL -H "User-Agent: smbcloudXYZ/smbcloud-ascapi release-workflow" -o crate.crate \
+            "https://crates.io/api/v1/crates/${crate}/${RELEASE_VERSION}/download"
+          if ! tar -xOf crate.crate "${crate}-${RELEASE_VERSION}/README.md" | grep -q "mcp-name: ${server_name}"; then
+            echo "${crate} ${RELEASE_VERSION} README is missing the 'mcp-name: ${server_name}' marker." >&2
+            echo "crates.io versions are immutable — cut a new release with the marker in place." >&2
+            exit 1
+          fi
+          rm crate.crate
+
+      - name: Install mcp-publisher
+        shell: bash
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Authenticate to the MCP Registry
+        shell: bash
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish
+        shell: bash
+        run: |
+          # Re-running a release should not fail the workflow: the registry
+          # rejects a version it already holds, which is the desired end state
+          # anyway.
+          out="$(./mcp-publisher publish 2>&1)" && { echo "${out}"; exit 0; }
+          echo "${out}"
+          if echo "${out}" | grep -q "duplicate version"; then
+            echo "Version already published — skipping."
+            exit 0
+          fi
+          exit 1
+
+      - name: Verify the server is listed
+        shell: bash
+        run: |
+          server_name="$(jq -r '.name' server.json)"
+          curl -fsSL "https://registry.modelcontextprotocol.io/v0.1/servers?search=${server_name}" | jq .

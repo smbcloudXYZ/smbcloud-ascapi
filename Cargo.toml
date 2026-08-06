@@ -1,6 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["crates/ascapi", "crates/cli"]
+members = [
+    "crates/core",
+    "crates/aso",
+    "crates/signing",
+    "crates/frontend",
+    "crates/mcp",
+    "crates/cli",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,7 +17,11 @@ license = "Apache-2.0"
 repository = "https://github.com/smbcloudXYZ/smbcloud-ascapi"
 
 [workspace.dependencies]
-smbcloud-ascapi = { version = "0.1.0", path = "crates/ascapi" }
+smbcloud-ascapi-core = { version = "0.1.0", path = "crates/core" }
+smbcloud-ascapi-aso = { version = "0.1.0", path = "crates/aso" }
+smbcloud-ascapi-signing = { version = "0.1.0", path = "crates/signing" }
+smbcloud-ascapi-frontend = { version = "0.1.0", path = "crates/frontend" }
+smbcloud-ascapi-mcp = { version = "0.1.0", path = "crates/mcp" }
 anyhow = "1"
 clap = "4"
 jsonwebtoken = "9"
@@ -19,8 +30,11 @@ serde = "1"
 serde_json = "1"
 thiserror = "2.0"
 tokio = "1"
+async-trait = "0.1"
 base64 = "0.22"
 rcgen = { version = "0.14", default-features = false, features = ["pem", "crypto", "aws_lc_rs"] }
 rsa = "0.9"
 rand = "0.8"
 zeroize = { version = "1", features = ["alloc"] }
+rmcp = { version = "2.2.0", features = ["server", "macros", "transport-io", "schemars"] }
+schemars = "1"

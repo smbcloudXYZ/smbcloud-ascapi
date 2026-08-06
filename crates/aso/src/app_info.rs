@@ -4,11 +4,12 @@
 //! `AppInfo` rows itself (there is no create/delete endpoint) — this module
 //! only reads them and updates category/age-rating relationships.
 
-use crate::client::Client;
-use crate::error::Result;
-use crate::jsonapi::{Document, ListDocument, Resource};
+use async_trait::async_trait;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
+use smbcloud_ascapi_core::jsonapi::{Document, ListDocument, Resource};
+use smbcloud_ascapi_core::Client;
+use smbcloud_ascapi_core::Result;
 
 pub const RESOURCE_TYPE: &str = "appInfos";
 
@@ -23,19 +24,33 @@ pub struct AppInfoAttributes {
 
 pub type AppInfo = Resource<AppInfoAttributes>;
 
-impl Client {
+/// AppInfos: the container for localized names and subtitles.
+///
+/// An extension trait rather than inherent methods, because `Client`
+/// lives in the core crate and Rust only allows inherent impls in the
+/// crate that defines the type. Import it, or the crate's `prelude`,
+/// to call these on a `Client`.
+#[async_trait]
+pub trait AppInfosApi {
     /// `GET /v1/apps/{app_id}/appInfos`. An app usually has one current
     /// `AppInfo` (plus, briefly, a second pending one while an edit awaits
     /// review) — this is the parent resource `AppInfoLocalization`s hang
     /// off of, and the id you need for `create_app_info_localization`.
-    pub async fn list_app_infos(&self, app_id: &str) -> Result<Vec<AppInfo>> {
+    async fn list_app_infos(&self, app_id: &str) -> Result<Vec<AppInfo>>;
+
+    async fn get_app_info(&self, id: &str) -> Result<AppInfo>;
+}
+
+#[async_trait]
+impl AppInfosApi for Client {
+    async fn list_app_infos(&self, app_id: &str) -> Result<Vec<AppInfo>> {
         let path = format!("/v1/apps/{app_id}/appInfos");
         let doc: ListDocument<AppInfoAttributes> =
             self.request(Method::GET, &path, &[], None::<&()>).await?;
         Ok(doc.data)
     }
 
-    pub async fn get_app_info(&self, id: &str) -> Result<AppInfo> {
+    async fn get_app_info(&self, id: &str) -> Result<AppInfo> {
         let path = format!("/v1/appInfos/{id}");
         let doc: Document<AppInfoAttributes> =
             self.request(Method::GET, &path, &[], None::<&()>).await?;

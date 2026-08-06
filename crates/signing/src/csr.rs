@@ -20,10 +20,10 @@
 //! [`rsa`] crate and is handed to rcgen as an externally supplied key
 //! pair purely for the CSR's self-signature.
 
-use crate::error::{Error, Result};
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair as RcgenKeyPair};
 use rsa::pkcs8::{EncodePrivateKey, LineEnding};
 use rsa::RsaPrivateKey;
+use smbcloud_ascapi_core::{Error, Result};
 use zeroize::Zeroizing;
 
 /// Apple rejects anything else. Not a tunable.

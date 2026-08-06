@@ -1,0 +1,18 @@
+[package]
+name = "smbcloud-ascapi-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared transport for the App Store Connect API: JWT auth, the HTTP client, JSON:API envelopes, and error types."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+jsonwebtoken = { workspace = true }
+reqwest = { workspace = true, features = ["json", "rustls-tls-native-roots"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

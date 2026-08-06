@@ -5,7 +5,8 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "CLI for adding/updating App Store Connect app metadata, built on smbcloud-ascapi."
+description = "CLI and MCP server for App Store Connect: issue Apple signing certificates and manage app metadata."
+readme = "README.md"
 
 [[bin]]
 name = "ascapi"
@@ -17,5 +18,9 @@ base64 = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-smbcloud-ascapi = { workspace = true }
+smbcloud-ascapi-aso = { workspace = true }
+smbcloud-ascapi-core = { workspace = true }
+smbcloud-ascapi-signing = { workspace = true }
+smbcloud-ascapi-frontend = { workspace = true }
+smbcloud-ascapi-mcp = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

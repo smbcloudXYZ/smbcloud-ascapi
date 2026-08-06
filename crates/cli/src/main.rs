@@ -1,20 +1,22 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use smbcloud_ascapi::app::AppUpdateAttributes;
-use smbcloud_ascapi::app_info_localization::{
+use smbcloud_ascapi_aso::app::AppUpdateAttributes;
+use smbcloud_ascapi_aso::app_info_localization::{
     AppInfoLocalizationCreateAttributes, AppInfoLocalizationUpdateAttributes,
 };
-use smbcloud_ascapi::app_screenshot_set::{
+use smbcloud_ascapi_aso::app_screenshot_set::{
     AppScreenshotSetCreateAttributes, ScreenshotDisplayType,
 };
-use smbcloud_ascapi::app_store_version::{AppStoreVersionCreateAttributes, Platform};
-use smbcloud_ascapi::app_store_version_localization::{
+use smbcloud_ascapi_aso::app_store_version::{AppStoreVersionCreateAttributes, Platform};
+use smbcloud_ascapi_aso::app_store_version_localization::{
     AppStoreVersionLocalizationCreateAttributes, AppStoreVersionLocalizationFields,
 };
-use smbcloud_ascapi::bundle_id::{BundleIdCreateAttributes, BundleIdPlatform};
-use smbcloud_ascapi::certificate::{CertificateCreateAttributes, CertificateType};
-use smbcloud_ascapi::csr::generate_certificate_request;
-use smbcloud_ascapi::{ApiKey, Client};
+use smbcloud_ascapi_aso::bundle_id::{BundleIdCreateAttributes, BundleIdPlatform};
+use smbcloud_ascapi_aso::prelude::*;
+use smbcloud_ascapi_core::{ApiKey, Client};
+use smbcloud_ascapi_signing::certificate::{CertificateCreateAttributes, CertificateType};
+use smbcloud_ascapi_signing::csr::generate_certificate_request;
+use smbcloud_ascapi_signing::prelude::*;
 use std::path::PathBuf;
 
 /// Add/update App Store Connect app metadata (apps, app infos, app store
@@ -23,13 +25,22 @@ use std::path::PathBuf;
 #[command(name = "ascapi", version, about)]
 struct Cli {
     /// App Store Connect API key ID (Users and Access → Integrations → App
-    /// Store Connect API).
-    #[arg(long, env = "ASC_API_KEY")]
-    key_id: String,
+    /// Store Connect API). Not required with `--mcp`, which resolves
+    /// credentials per tool call so an unconfigured server can still list
+    /// its tools.
+    #[arg(long, env = "ASC_API_KEY", required_unless_present = "mcp")]
+    key_id: Option<String>,
 
     /// App Store Connect API issuer ID (same page as the key).
-    #[arg(long, env = "ASC_ISSUER_ID")]
-    issuer_id: String,
+    #[arg(long, env = "ASC_ISSUER_ID", required_unless_present = "mcp")]
+    issuer_id: Option<String>,
+
+    /// Run as an MCP server over stdio instead of executing a subcommand.
+    ///
+    /// stdout carries the JSON-RPC stream in this mode, so nothing else
+    /// may be written to it.
+    #[arg(long)]
+    mcp: bool,
 
     /// Path to the key's .p8 private key file. Defaults to
     /// `~/.appstoreconnect/private_keys/AuthKey_<key-id>.p8`, matching
@@ -43,7 +54,7 @@ struct Cli {
     dry_run: bool,
 
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -441,19 +452,38 @@ fn dry_run_guard(dry_run: bool, value: &impl serde::Serialize) -> Result<bool> {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    if cli.mcp {
+        return smbcloud_ascapi_mcp::serve().await;
+    }
+
+    let key_id = cli
+        .key_id
+        .clone()
+        .context("--key-id is required (or set ASC_API_KEY)")?;
+    let issuer_id = cli
+        .issuer_id
+        .clone()
+        .context("--issuer-id is required (or set ASC_ISSUER_ID)")?;
+
     let private_key_path = cli.private_key_path.clone().unwrap_or_else(|| {
         let mut path = dirs_home();
         path.push(".appstoreconnect");
         path.push("private_keys");
-        path.push(format!("AuthKey_{}.p8", cli.key_id));
+        path.push(format!("AuthKey_{key_id}.p8"));
         path
     });
 
-    let api_key = ApiKey::from_p8_file(&cli.key_id, &cli.issuer_id, &private_key_path)
+    let api_key = ApiKey::from_p8_file(&key_id, &issuer_id, &private_key_path)
         .with_context(|| format!("loading App Store Connect API key from {private_key_path:?}"))?;
     let client = Client::new(api_key);
 
-    match cli.command {
+    let Some(command) = cli.command else {
+        anyhow::bail!(
+            "no subcommand given; run `ascapi --help`, or `ascapi --mcp` for the MCP server"
+        )
+    };
+
+    match command {
         Command::Apps { command } => run_apps(&client, command, cli.dry_run).await,
         Command::BundleIds { command } => run_bundle_ids(&client, command, cli.dry_run).await,
         Command::AppStoreVersions { command } => {
@@ -819,7 +849,9 @@ struct CertificateSummary {
     expired: Option<bool>,
 }
 
-fn summarize(certificate: &smbcloud_ascapi::certificate::Certificate) -> CertificateSummary {
+fn summarize(
+    certificate: &smbcloud_ascapi_signing::certificate::Certificate,
+) -> CertificateSummary {
     let expiration_date = certificate.attributes.expiration_date.clone();
     // Lexicographic comparison is sound for ISO-8601 UTC timestamps, which
     // is what Apple returns, and avoids a date-parsing dependency for a

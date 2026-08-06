@@ -20,9 +20,14 @@ struct CachedToken {
 
 /// Thin async HTTP client for the App Store Connect API. Handles JWT minting
 /// (cached and refreshed automatically) and JSON:API request/response
-/// plumbing. Resource-specific calls (apps, app store versions, bundle IDs,
-/// ...) are implemented as additional `impl Client` blocks alongside each
-/// resource's types, in their own modules.
+/// plumbing.
+///
+/// Resource-specific calls live in the domain crates as extension traits on
+/// this type: `smbcloud-ascapi-aso` for App Metadata, `smbcloud-ascapi-signing`
+/// for certificates. [`Client::request`], [`Client::request_no_content`], and
+/// [`Client::upload_bytes`] are the low-level seam those traits build on, and
+/// are public for that reason rather than because callers should reach for
+/// them directly.
 pub struct Client {
     http: reqwest::Client,
     api_key: ApiKey,
@@ -71,7 +76,7 @@ impl Client {
     /// Send a request and decode a JSON:API response body into `T`. Use
     /// `request_no_content` instead for calls (typically `DELETE`) that
     /// return an empty `204` body.
-    pub(crate) async fn request<B: Serialize, T: DeserializeOwned>(
+    pub async fn request<B: Serialize, T: DeserializeOwned>(
         &self,
         method: Method,
         path: &str,
@@ -86,7 +91,7 @@ impl Client {
     }
 
     /// Send a request that returns no body on success (typically `DELETE`).
-    pub(crate) async fn request_no_content<B: Serialize>(
+    pub async fn request_no_content<B: Serialize>(
         &self,
         method: Method,
         path: &str,
@@ -129,7 +134,7 @@ impl Client {
     /// upload URLs are pre-signed and carry their own auth in
     /// `request_headers`; sending our JWT alongside would be wrong for a
     /// host that isn't `api.appstoreconnect.apple.com`.
-    pub(crate) async fn upload_bytes(
+    pub async fn upload_bytes(
         &self,
         method: Method,
         url: &str,
