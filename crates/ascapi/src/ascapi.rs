@@ -1,8 +1,12 @@
 //! Embeddable Rust client (and CLI, in the sibling `smbcloud-ascapi-cli`
-//! crate / `ascapi` binary) for the App Store Connect API's
-//! [App Metadata](https://developer.apple.com/documentation/appstoreconnectapi/app-metadata)
-//! resources: apps, app infos and their localizations, app store versions
-//! and their localizations, and bundle IDs.
+//! crate / `ascapi` binary) for two slices of the App Store Connect API:
+//!
+//! - [App Metadata](https://developer.apple.com/documentation/appstoreconnectapi/app-metadata):
+//!   apps, app infos and their localizations, app store versions and their
+//!   localizations, and bundle IDs.
+//! - Signing certificates ([`certificate`]), plus local RSA key pair and
+//!   CSR generation ([`csr`]) so a certificate can be issued end to end
+//!   without the developer portal.
 //!
 //! ```no_run
 //! use smbcloud_ascapi::{ApiKey, Client};
@@ -33,9 +37,9 @@
 //! # }
 //! ```
 //!
-//! Not covered (yet): app preview (video) binary uploads, age rating
-//! declarations, in-app purchases, TestFlight, and the rest of the wider
-//! App Store Connect API surface outside "App Metadata".
+//! Not covered (yet): provisioning profiles and devices (the other half of
+//! the Provisioning surface), app preview (video) binary uploads, age
+//! rating declarations, in-app purchases, and TestFlight.
 
 pub mod app;
 pub mod app_info;
@@ -47,7 +51,9 @@ pub mod app_store_version_localization;
 pub mod auth;
 pub mod build;
 pub mod bundle_id;
+pub mod certificate;
 pub mod client;
+pub mod csr;
 pub mod error;
 pub mod jsonapi;
 
