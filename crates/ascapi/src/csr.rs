@@ -7,7 +7,7 @@
 //! binding your public key to your team identity.
 //!
 //! The private half never leaves this process except through
-//! [`KeyPair::private_key_pem`], and it is the part that actually matters:
+//! [`CertificateRequest::private_key_pem`], and it is the part that actually matters:
 //! a certificate whose private key is lost is dead, permanently, because
 //! Apple never had a copy to give back.
 //!

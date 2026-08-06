@@ -32,7 +32,7 @@ struct Cli {
     issuer_id: String,
 
     /// Path to the key's .p8 private key file. Defaults to
-    /// ~/.appstoreconnect/private_keys/AuthKey_<key-id>.p8, matching
+    /// `~/.appstoreconnect/private_keys/AuthKey_<key-id>.p8`, matching
     /// Xcode's own convention.
     #[arg(long, env = "ASC_PRIVATE_KEY_PATH", global = true)]
     private_key_path: Option<PathBuf>,
