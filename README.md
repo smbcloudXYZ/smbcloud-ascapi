@@ -1,6 +1,6 @@
 # smbcloud-ascapi
 
-The App Stores Coolest API.
+`smbcloud-ascapi` is the app stores coolest API.
 
 ## Copyright
 
