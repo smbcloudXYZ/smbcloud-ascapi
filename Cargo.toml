@@ -19,3 +19,8 @@ serde = "1"
 serde_json = "1"
 thiserror = "2.0"
 tokio = "1"
+base64 = "0.22"
+rcgen = { version = "0.14", default-features = false, features = ["pem", "crypto", "aws_lc_rs"] }
+rsa = "0.9"
+rand = "0.8"
+zeroize = { version = "1", features = ["alloc"] }

@@ -12,12 +12,17 @@ readme = "README.md"
 path = "src/ascapi.rs"
 
 [dependencies]
+base64 = { workspace = true }
 jsonwebtoken = { workspace = true }
+rand = { workspace = true }
+rcgen = { workspace = true }
+rsa = { workspace = true, features = ["pem"] }
 md5 = "0.7"
 reqwest = { workspace = true, features = ["json", "rustls-tls-native-roots"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
