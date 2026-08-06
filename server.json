@@ -1,0 +1,72 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.smbcloudXYZ/ascapi",
+  "title": "The App Stores Cooolest API",
+  "description": "Forget Fastlane, this is the app stores coolest API.",
+  "version": "0.1.0",
+  "websiteUrl": "https://github.com/smbcloudXYZ/smbcloud-ascapi",
+  "repository": {
+    "url": "https://github.com/smbcloudXYZ/smbcloud-ascapi",
+    "source": "github",
+    "id": "1303134569"
+  },
+  "packages": [
+    {
+      "registryType": "cargo",
+      "registryBaseUrl": "https://crates.io",
+      "identifier": "smbcloud-ascapi-cli",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "named",
+          "name": "--mcp",
+          "description": "Run App Store Connect Signing as an MCP server over stdio.",
+          "isRequired": true
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "ASC_API_KEY",
+          "description": "App Store Connect API key ID (Users and Access → Integrations → App Store Connect API).",
+          "isRequired": true,
+          "isSecret": false
+        },
+        {
+          "name": "ASC_ISSUER_ID",
+          "description": "App Store Connect API issuer ID, shown on the same page as the key.",
+          "isRequired": true,
+          "isSecret": false
+        },
+        {
+          "name": "ASC_PRIVATE_KEY_PATH",
+          "description": "Path to the .p8 private key for that API key. Defaults to ~/.appstoreconnect/private_keys/AuthKey_<key-id>.p8, matching Xcode's own convention.",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "categories": [
+        "developer-tools",
+        "automation"
+      ],
+      "keywords": [
+        "code signing",
+        "App Store Connect",
+        "signing certificate",
+        "provisioning",
+        "iOS release",
+        "macOS release",
+        "certificate signing request",
+        "fastlane match alternative",
+        "Apple developer",
+        "CSR"
+      ]
+    }
+  }
+}

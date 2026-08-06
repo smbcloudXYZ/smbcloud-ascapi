@@ -7,11 +7,12 @@
 //! `AppStoreVersion`'s `appVersionState` (which only changes once a build is
 //! attached to the version and resubmitted — outside this crate's scope).
 
-use crate::client::Client;
-use crate::error::Result;
-use crate::jsonapi::{ListDocument, Resource};
+use async_trait::async_trait;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
+use smbcloud_ascapi_core::jsonapi::{ListDocument, Resource};
+use smbcloud_ascapi_core::Client;
+use smbcloud_ascapi_core::Result;
 
 pub const RESOURCE_TYPE: &str = "builds";
 
@@ -27,13 +28,25 @@ pub struct BuildAttributes {
 
 pub type Build = Resource<BuildAttributes>;
 
-impl Client {
+/// Uploaded builds, which a version must have attached.
+///
+/// An extension trait rather than inherent methods, because `Client`
+/// lives in the core crate and Rust only allows inherent impls in the
+/// crate that defines the type. Import it, or the crate's `prelude`,
+/// to call these on a `Client`.
+#[async_trait]
+pub trait BuildsApi {
     /// `GET /v1/apps/{app_id}/builds`, sorted newest-first by
     /// `uploadedDate` (client-side — this endpoint's `sort` query parameter
     /// is rejected by the API, unlike most other list endpoints), so the
     /// build most recently uploaded (e.g. by a fixplist re-upload) is
     /// `list_builds(app_id).await?.first()`.
-    pub async fn list_builds(&self, app_id: &str) -> Result<Vec<Build>> {
+    async fn list_builds(&self, app_id: &str) -> Result<Vec<Build>>;
+}
+
+#[async_trait]
+impl BuildsApi for Client {
+    async fn list_builds(&self, app_id: &str) -> Result<Vec<Build>> {
         let path = format!("/v1/apps/{app_id}/builds");
         let doc: ListDocument<BuildAttributes> =
             self.request(Method::GET, &path, &[], None::<&()>).await?;

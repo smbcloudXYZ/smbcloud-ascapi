@@ -18,13 +18,14 @@
 //!   regenerated.
 //!
 //! See [`crate::csr`] for producing the `csr_content` that
-//! [`Client::create_certificate`] wants.
+//! [`CertificatesApi::create_certificate`] wants.
 
-use crate::client::Client;
-use crate::error::Result;
-use crate::jsonapi::{CreateBody, CreateData, Document, ListDocument, Resource};
+use async_trait::async_trait;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
+use smbcloud_ascapi_core::jsonapi::{CreateBody, CreateData, Document, ListDocument, Resource};
+use smbcloud_ascapi_core::Client;
+use smbcloud_ascapi_core::Result;
 
 pub const RESOURCE_TYPE: &str = "certificates";
 
@@ -123,7 +124,14 @@ pub struct CertificateCreateAttributes {
     pub certificate_type: CertificateType,
 }
 
-impl Client {
+/// Signing certificates.
+///
+/// An extension trait rather than inherent methods, because `Client`
+/// lives in the core crate and Rust only allows inherent impls in the
+/// crate that defines the type. Import it, or the crate's `prelude`,
+/// to call these on a `Client`.
+#[async_trait]
+pub trait CertificatesApi {
     /// `GET /v1/certificates`, optionally filtered by type.
     ///
     /// Apple returns expired certificates too, and gives no filter for
@@ -131,7 +139,40 @@ impl Client {
     /// for yourself. That is deliberate on their side: an expired
     /// certificate is still meaningful for identifying what a previously
     /// shipped build was signed with.
-    pub async fn list_certificates(
+    async fn list_certificates(
+        &self,
+        filter_type: Option<CertificateType>,
+    ) -> Result<Vec<Certificate>>;
+
+    /// `POST /v1/certificates` — issues a new certificate for a CSR.
+    ///
+    /// The response carries `certificate_content`, the only copy of the
+    /// signed certificate you are handed at creation time. It can be
+    /// fetched again later with [`CertificatesApi::list_certificates`], but the
+    /// private key it belongs to cannot, so store the two together
+    /// immediately.
+    ///
+    /// Apple caps how many certificates of each type a team may hold at
+    /// once (two for distribution). At the cap this returns a 409; revoke
+    /// something with [`CertificatesApi::revoke_certificate`] first.
+    async fn create_certificate(
+        &self,
+        attributes: CertificateCreateAttributes,
+    ) -> Result<Certificate>;
+
+    /// `DELETE /v1/certificates/{id}` — revokes a certificate.
+    ///
+    /// Irreversible, and wider-reaching than it looks: every provisioning
+    /// profile that embeds this certificate stops working for everyone on
+    /// the team at once, including builds already in CI. Revoking is for
+    /// reclaiming a slot at Apple's per-type cap or for a key you believe
+    /// is compromised, not for tidying up.
+    async fn revoke_certificate(&self, id: &str) -> Result<()>;
+}
+
+#[async_trait]
+impl CertificatesApi for Client {
+    async fn list_certificates(
         &self,
         filter_type: Option<CertificateType>,
     ) -> Result<Vec<Certificate>> {
@@ -149,18 +190,7 @@ impl Client {
         Ok(doc.data)
     }
 
-    /// `POST /v1/certificates` — issues a new certificate for a CSR.
-    ///
-    /// The response carries `certificate_content`, the only copy of the
-    /// signed certificate you are handed at creation time. It can be
-    /// fetched again later with [`Client::list_certificates`], but the
-    /// private key it belongs to cannot, so store the two together
-    /// immediately.
-    ///
-    /// Apple caps how many certificates of each type a team may hold at
-    /// once (two for distribution). At the cap this returns a 409; revoke
-    /// something with [`Client::revoke_certificate`] first.
-    pub async fn create_certificate(
+    async fn create_certificate(
         &self,
         attributes: CertificateCreateAttributes,
     ) -> Result<Certificate> {
@@ -177,14 +207,7 @@ impl Client {
         Ok(doc.data)
     }
 
-    /// `DELETE /v1/certificates/{id}` — revokes a certificate.
-    ///
-    /// Irreversible, and wider-reaching than it looks: every provisioning
-    /// profile that embeds this certificate stops working for everyone on
-    /// the team at once, including builds already in CI. Revoking is for
-    /// reclaiming a slot at Apple's per-type cap or for a key you believe
-    /// is compromised, not for tidying up.
-    pub async fn revoke_certificate(&self, id: &str) -> Result<()> {
+    async fn revoke_certificate(&self, id: &str) -> Result<()> {
         self.request_no_content(
             Method::DELETE,
             &format!("/v1/certificates/{id}"),

@@ -57,6 +57,16 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+      - name: Check each library builds on its own
+        # The layering only means something if the lower crates can be built
+        # without the upper ones. A workspace build would happily compile
+        # core with the MCP server's dependencies already in the graph and
+        # tell us nothing.
+        run: |
+          cargo check --package smbcloud-ascapi-core --locked
+          cargo check --package smbcloud-ascapi-aso --locked
+          cargo check --package smbcloud-ascapi-signing --locked
+
       - name: Build docs
         # Intra-doc links are load-bearing in this crate: the certificate
         # module's warnings about lost private keys point at the csr module
