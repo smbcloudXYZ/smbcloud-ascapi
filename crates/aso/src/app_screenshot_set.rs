@@ -3,11 +3,14 @@
 //! `AppStoreVersion`. Screenshots themselves are a separate resource
 //! ([`crate::app_screenshot`]) that belongs to a set.
 
-use crate::client::Client;
-use crate::error::Result;
-use crate::jsonapi::{CreateBody, CreateData, Document, ListDocument, Resource, ResourceId, ToOne};
+use async_trait::async_trait;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
+use smbcloud_ascapi_core::jsonapi::{
+    CreateBody, CreateData, Document, ListDocument, Resource, ResourceId, ToOne,
+};
+use smbcloud_ascapi_core::Client;
+use smbcloud_ascapi_core::Result;
 
 pub const RESOURCE_TYPE: &str = "appScreenshotSets";
 
@@ -81,9 +84,37 @@ pub struct AppScreenshotSetRelationships {
     pub app_store_version_localization: ToOne,
 }
 
-impl Client {
+/// Per-device-class screenshot buckets.
+///
+/// An extension trait rather than inherent methods, because `Client`
+/// lives in the core crate and Rust only allows inherent impls in the
+/// crate that defines the type. Import it, or the crate's `prelude`,
+/// to call these on a `Client`.
+#[async_trait]
+pub trait AppScreenshotSetsApi {
     /// `GET /v1/appStoreVersionLocalizations/{id}/appScreenshotSets`.
-    pub async fn list_app_screenshot_sets(
+    async fn list_app_screenshot_sets(
+        &self,
+        app_store_version_localization_id: &str,
+    ) -> Result<Vec<AppScreenshotSet>>;
+
+    /// `POST /v1/appScreenshotSets` — adds a device/display class's
+    /// screenshot bucket to a localization. Screenshots are then added to
+    /// the returned set with [`AppScreenshotsApi::create_app_screenshot`](crate::app_screenshot::AppScreenshotsApi::create_app_screenshot) /
+    /// [`AppScreenshotsApi::upload_app_screenshot`](crate::app_screenshot::AppScreenshotsApi::upload_app_screenshot).
+    async fn create_app_screenshot_set(
+        &self,
+        app_store_version_localization_id: &str,
+        attributes: AppScreenshotSetCreateAttributes,
+    ) -> Result<AppScreenshotSet>;
+
+    /// `DELETE /v1/appScreenshotSets/{id}`.
+    async fn delete_app_screenshot_set(&self, id: &str) -> Result<()>;
+}
+
+#[async_trait]
+impl AppScreenshotSetsApi for Client {
+    async fn list_app_screenshot_sets(
         &self,
         app_store_version_localization_id: &str,
     ) -> Result<Vec<AppScreenshotSet>> {
@@ -95,11 +126,7 @@ impl Client {
         Ok(doc.data)
     }
 
-    /// `POST /v1/appScreenshotSets` — adds a device/display class's
-    /// screenshot bucket to a localization. Screenshots are then added to
-    /// the returned set with [`Client::create_app_screenshot`] /
-    /// [`Client::upload_app_screenshot`].
-    pub async fn create_app_screenshot_set(
+    async fn create_app_screenshot_set(
         &self,
         app_store_version_localization_id: &str,
         attributes: AppScreenshotSetCreateAttributes,
@@ -124,8 +151,7 @@ impl Client {
         Ok(doc.data)
     }
 
-    /// `DELETE /v1/appScreenshotSets/{id}`.
-    pub async fn delete_app_screenshot_set(&self, id: &str) -> Result<()> {
+    async fn delete_app_screenshot_set(&self, id: &str) -> Result<()> {
         let path = format!("/v1/appScreenshotSets/{id}");
         self.request_no_content::<()>(Method::DELETE, &path, &[], None)
             .await

@@ -1,23 +1,18 @@
 [package]
-name = "smbcloud-ascapi"
+name = "smbcloud-ascapi-core"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Embeddable client for the App Store Connect API's App Metadata resources (apps, app infos, app store versions, bundle IDs, and their localizations)."
-readme = "README.md"
+description = "Shared transport for the App Store Connect API: JWT auth, the HTTP client, JSON:API envelopes, and error types."
 
 [lib]
-path = "src/ascapi.rs"
+path = "src/lib.rs"
 
 [dependencies]
 jsonwebtoken = { workspace = true }
-md5 = "0.7"
 reqwest = { workspace = true, features = ["json", "rustls-tls-native-roots"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-
-[dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

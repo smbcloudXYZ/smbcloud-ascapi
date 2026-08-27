@@ -10,16 +10,17 @@
 //! 3. `PATCH /v1/appScreenshots/{id}` with `uploaded: true` and an MD5
 //!    checksum of the file commits the upload.
 //!
-//! [`Client::upload_app_screenshot`] does all three steps in one call.
+//! [`AppScreenshotsApi::upload_app_screenshot`] does all three steps in one call.
 
-use crate::client::Client;
-use crate::error::Result;
-use crate::jsonapi::{
+use async_trait::async_trait;
+use reqwest::Method;
+use serde::{Deserialize, Deserializer, Serialize};
+use smbcloud_ascapi_core::jsonapi::{
     CreateBody, CreateData, Document, ListDocument, Resource, ResourceId, ToOne, UpdateBody,
     UpdateData,
 };
-use reqwest::Method;
-use serde::{Deserialize, Deserializer, Serialize};
+use smbcloud_ascapi_core::Client;
+use smbcloud_ascapi_core::Result;
 
 pub const RESOURCE_TYPE: &str = "appScreenshots";
 
@@ -105,9 +106,67 @@ pub struct AppScreenshotCommitAttributes {
     pub source_file_checksum: Option<String>,
 }
 
-impl Client {
+/// Screenshot image binaries within a set.
+///
+/// An extension trait rather than inherent methods, because `Client`
+/// lives in the core crate and Rust only allows inherent impls in the
+/// crate that defines the type. Import it, or the crate's `prelude`,
+/// to call these on a `Client`.
+#[async_trait]
+pub trait AppScreenshotsApi {
     /// `GET /v1/appScreenshotSets/{id}/appScreenshots`.
-    pub async fn list_app_screenshots(
+    async fn list_app_screenshots(&self, app_screenshot_set_id: &str)
+        -> Result<Vec<AppScreenshot>>;
+
+    /// `POST /v1/appScreenshots` — reserves the asset and returns
+    /// pre-signed `uploadOperations`. Prefer [`AppScreenshotsApi::upload_app_screenshot`]
+    /// unless you need to drive the upload/commit steps yourself.
+    async fn create_app_screenshot(
+        &self,
+        app_screenshot_set_id: &str,
+        attributes: AppScreenshotCreateAttributes,
+    ) -> Result<AppScreenshot>;
+
+    /// PUTs `bytes` to every one of `screenshot`'s reserved
+    /// `uploadOperations`, slicing the buffer per operation's `offset` /
+    /// `length`. Does not commit the upload — call
+    /// [`AppScreenshotsApi::commit_app_screenshot`] (or use
+    /// [`AppScreenshotsApi::upload_app_screenshot`]) after this succeeds.
+    async fn upload_app_screenshot_bytes(
+        &self,
+        screenshot: &AppScreenshot,
+        bytes: &[u8],
+    ) -> Result<()>;
+
+    /// `PATCH /v1/appScreenshots/{id}` with `uploaded: true` — tells App
+    /// Store Connect the binary is fully transferred so it can start
+    /// processing/validating the asset.
+    async fn commit_app_screenshot(
+        &self,
+        id: &str,
+        source_file_checksum: String,
+    ) -> Result<AppScreenshot>;
+
+    /// `DELETE /v1/appScreenshots/{id}`.
+    async fn delete_app_screenshot(&self, id: &str) -> Result<()>;
+
+    /// Reserve, upload, and commit an image in one call: `bytes` becomes an
+    /// `AppScreenshot` under `app_screenshot_set_id`, named `file_name`.
+    /// This is the entry point most callers want; the lower-level
+    /// `create_app_screenshot` / `upload_app_screenshot_bytes` /
+    /// `commit_app_screenshot` are exposed for callers that need to
+    /// checkpoint between steps (e.g. a CLI resuming a failed upload).
+    async fn upload_app_screenshot(
+        &self,
+        app_screenshot_set_id: &str,
+        file_name: String,
+        bytes: Vec<u8>,
+    ) -> Result<AppScreenshot>;
+}
+
+#[async_trait]
+impl AppScreenshotsApi for Client {
+    async fn list_app_screenshots(
         &self,
         app_screenshot_set_id: &str,
     ) -> Result<Vec<AppScreenshot>> {
@@ -117,10 +176,7 @@ impl Client {
         Ok(doc.data)
     }
 
-    /// `POST /v1/appScreenshots` — reserves the asset and returns
-    /// pre-signed `uploadOperations`. Prefer [`Client::upload_app_screenshot`]
-    /// unless you need to drive the upload/commit steps yourself.
-    pub async fn create_app_screenshot(
+    async fn create_app_screenshot(
         &self,
         app_screenshot_set_id: &str,
         attributes: AppScreenshotCreateAttributes,
@@ -145,12 +201,7 @@ impl Client {
         Ok(doc.data)
     }
 
-    /// PUTs `bytes` to every one of `screenshot`'s reserved
-    /// `uploadOperations`, slicing the buffer per operation's `offset` /
-    /// `length`. Does not commit the upload — call
-    /// [`Client::commit_app_screenshot`] (or use
-    /// [`Client::upload_app_screenshot`]) after this succeeds.
-    pub async fn upload_app_screenshot_bytes(
+    async fn upload_app_screenshot_bytes(
         &self,
         screenshot: &AppScreenshot,
         bytes: &[u8],
@@ -173,10 +224,7 @@ impl Client {
         Ok(())
     }
 
-    /// `PATCH /v1/appScreenshots/{id}` with `uploaded: true` — tells App
-    /// Store Connect the binary is fully transferred so it can start
-    /// processing/validating the asset.
-    pub async fn commit_app_screenshot(
+    async fn commit_app_screenshot(
         &self,
         id: &str,
         source_file_checksum: String,
@@ -197,20 +245,13 @@ impl Client {
         Ok(doc.data)
     }
 
-    /// `DELETE /v1/appScreenshots/{id}`.
-    pub async fn delete_app_screenshot(&self, id: &str) -> Result<()> {
+    async fn delete_app_screenshot(&self, id: &str) -> Result<()> {
         let path = format!("/v1/appScreenshots/{id}");
         self.request_no_content::<()>(Method::DELETE, &path, &[], None)
             .await
     }
 
-    /// Reserve, upload, and commit an image in one call: `bytes` becomes an
-    /// `AppScreenshot` under `app_screenshot_set_id`, named `file_name`.
-    /// This is the entry point most callers want; the lower-level
-    /// `create_app_screenshot` / `upload_app_screenshot_bytes` /
-    /// `commit_app_screenshot` are exposed for callers that need to
-    /// checkpoint between steps (e.g. a CLI resuming a failed upload).
-    pub async fn upload_app_screenshot(
+    async fn upload_app_screenshot(
         &self,
         app_screenshot_set_id: &str,
         file_name: String,

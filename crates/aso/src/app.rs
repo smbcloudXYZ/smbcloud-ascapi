@@ -6,11 +6,12 @@
 //! platform, a build upload) is what actually provisions the `App` row.
 //! This module only reads and updates one that already exists.
 
-use crate::client::Client;
-use crate::error::Result;
-use crate::jsonapi::{Document, ListDocument, Resource, UpdateBody, UpdateData};
+use async_trait::async_trait;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
+use smbcloud_ascapi_core::jsonapi::{Document, ListDocument, Resource, UpdateBody, UpdateData};
+use smbcloud_ascapi_core::Client;
+use smbcloud_ascapi_core::Result;
 
 pub const RESOURCE_TYPE: &str = "apps";
 
@@ -36,11 +37,27 @@ pub struct AppUpdateAttributes {
     pub content_rights_declaration: Option<String>,
 }
 
-impl Client {
+/// Apps: the top-level record for a product on the store.
+///
+/// An extension trait rather than inherent methods, because `Client`
+/// lives in the core crate and Rust only allows inherent impls in the
+/// crate that defines the type. Import it, or the crate's `prelude`,
+/// to call these on a `Client`.
+#[async_trait]
+pub trait AppsApi {
     /// `GET /v1/apps`, optionally narrowed with `filter[bundleId]` — the
     /// usual way to resolve an app's ASC id from the bundle identifier
     /// already baked into an Xcode project.
-    pub async fn list_apps(&self, filter_bundle_id: Option<&str>) -> Result<Vec<App>> {
+    async fn list_apps(&self, filter_bundle_id: Option<&str>) -> Result<Vec<App>>;
+
+    async fn get_app(&self, app_id: &str) -> Result<App>;
+
+    async fn update_app(&self, app_id: &str, attributes: AppUpdateAttributes) -> Result<App>;
+}
+
+#[async_trait]
+impl AppsApi for Client {
+    async fn list_apps(&self, filter_bundle_id: Option<&str>) -> Result<Vec<App>> {
         let mut query = Vec::new();
         if let Some(bundle_id) = filter_bundle_id {
             query.push(("filter[bundleId]", bundle_id));
@@ -51,14 +68,14 @@ impl Client {
         Ok(doc.data)
     }
 
-    pub async fn get_app(&self, app_id: &str) -> Result<App> {
+    async fn get_app(&self, app_id: &str) -> Result<App> {
         let path = format!("/v1/apps/{app_id}");
         let doc: Document<AppAttributes> =
             self.request(Method::GET, &path, &[], None::<&()>).await?;
         Ok(doc.data)
     }
 
-    pub async fn update_app(&self, app_id: &str, attributes: AppUpdateAttributes) -> Result<App> {
+    async fn update_app(&self, app_id: &str, attributes: AppUpdateAttributes) -> Result<App> {
         let path = format!("/v1/apps/{app_id}");
         let body = UpdateBody {
             data: UpdateData {

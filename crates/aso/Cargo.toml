@@ -1,0 +1,19 @@
+[package]
+name = "smbcloud-ascapi-aso"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "App Store Connect App Metadata resources: apps, app infos, versions, bundle IDs, localizations, and screenshots."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+async-trait = { workspace = true }
+md5 = "0.7"
+reqwest = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+smbcloud-ascapi-core = { workspace = true }

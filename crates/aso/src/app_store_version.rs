@@ -5,14 +5,15 @@
 //! doesn't have one for yet — e.g. adding visionOS to an app that so far
 //! only ships on iOS/macOS — *is* how you add that platform.
 
-use crate::client::Client;
-use crate::error::Result;
-use crate::jsonapi::{
+use async_trait::async_trait;
+use reqwest::Method;
+use serde::{Deserialize, Serialize};
+use smbcloud_ascapi_core::jsonapi::{
     CreateBody, CreateData, Document, ListDocument, Resource, ResourceId, ToOne,
     UpdateRelationshipsBody, UpdateRelationshipsData,
 };
-use reqwest::Method;
-use serde::{Deserialize, Serialize};
+use smbcloud_ascapi_core::Client;
+use smbcloud_ascapi_core::Result;
 
 pub const RESOURCE_TYPE: &str = "appStoreVersions";
 
@@ -67,10 +68,51 @@ pub struct AppStoreVersionRelationships {
     pub app: ToOne,
 }
 
-impl Client {
+/// Per-platform version records, the unit the store reviews.
+///
+/// An extension trait rather than inherent methods, because `Client`
+/// lives in the core crate and Rust only allows inherent impls in the
+/// crate that defines the type. Import it, or the crate's `prelude`,
+/// to call these on a `Client`.
+#[async_trait]
+pub trait AppStoreVersionsApi {
     /// `GET /v1/apps/{app_id}/appStoreVersions`, optionally narrowed to one
     /// platform.
-    pub async fn list_app_store_versions(
+    async fn list_app_store_versions(
+        &self,
+        app_id: &str,
+        filter_platform: Option<Platform>,
+    ) -> Result<Vec<AppStoreVersion>>;
+
+    async fn get_app_store_version(&self, id: &str) -> Result<AppStoreVersion>;
+
+    /// `POST /v1/appStoreVersions`.
+    async fn create_app_store_version(
+        &self,
+        app_id: &str,
+        attributes: AppStoreVersionCreateAttributes,
+    ) -> Result<AppStoreVersion>;
+
+    /// `DELETE /v1/appStoreVersions/{id}` — only allowed while the version
+    /// hasn't been submitted for review.
+    async fn delete_app_store_version(&self, id: &str) -> Result<()>;
+
+    /// `PATCH /v1/appStoreVersions/{id}` with a `build` relationship —
+    /// attaches (or replaces) the `Build` this version will submit. Needed
+    /// after a re-upload fixes an `INVALID_BINARY` version: the fixed
+    /// build must be attached here before the version can be resubmitted
+    /// for review (resubmission itself is outside this crate's scope — see
+    /// [`crate::build`]'s module doc).
+    async fn set_app_store_version_build(
+        &self,
+        id: &str,
+        build_id: &str,
+    ) -> Result<AppStoreVersion>;
+}
+
+#[async_trait]
+impl AppStoreVersionsApi for Client {
+    async fn list_app_store_versions(
         &self,
         app_id: &str,
         filter_platform: Option<Platform>,
@@ -86,15 +128,14 @@ impl Client {
         Ok(doc.data)
     }
 
-    pub async fn get_app_store_version(&self, id: &str) -> Result<AppStoreVersion> {
+    async fn get_app_store_version(&self, id: &str) -> Result<AppStoreVersion> {
         let path = format!("/v1/appStoreVersions/{id}");
         let doc: Document<AppStoreVersionAttributes> =
             self.request(Method::GET, &path, &[], None::<&()>).await?;
         Ok(doc.data)
     }
 
-    /// `POST /v1/appStoreVersions`.
-    pub async fn create_app_store_version(
+    async fn create_app_store_version(
         &self,
         app_id: &str,
         attributes: AppStoreVersionCreateAttributes,
@@ -119,21 +160,13 @@ impl Client {
         Ok(doc.data)
     }
 
-    /// `DELETE /v1/appStoreVersions/{id}` — only allowed while the version
-    /// hasn't been submitted for review.
-    pub async fn delete_app_store_version(&self, id: &str) -> Result<()> {
+    async fn delete_app_store_version(&self, id: &str) -> Result<()> {
         let path = format!("/v1/appStoreVersions/{id}");
         self.request_no_content::<()>(Method::DELETE, &path, &[], None)
             .await
     }
 
-    /// `PATCH /v1/appStoreVersions/{id}` with a `build` relationship —
-    /// attaches (or replaces) the `Build` this version will submit. Needed
-    /// after a re-upload fixes an `INVALID_BINARY` version: the fixed
-    /// build must be attached here before the version can be resubmitted
-    /// for review (resubmission itself is outside this crate's scope — see
-    /// [`crate::build`]'s module doc).
-    pub async fn set_app_store_version_build(
+    async fn set_app_store_version_build(
         &self,
         id: &str,
         build_id: &str,
@@ -159,6 +192,9 @@ impl Client {
     }
 }
 
+/// The `relationships` payload for pointing an App Store Version at a
+/// build. Its own type because App Store Connect wants a PATCH body that
+/// carries relationships and no attributes.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppStoreVersionBuildRelationship {

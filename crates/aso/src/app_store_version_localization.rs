@@ -1,11 +1,12 @@
-use crate::client::Client;
-use crate::error::Result;
-use crate::jsonapi::{
+use async_trait::async_trait;
+use reqwest::Method;
+use serde::{Deserialize, Serialize};
+use smbcloud_ascapi_core::jsonapi::{
     CreateBody, CreateData, Document, ListDocument, Resource, ResourceId, ToOne, UpdateBody,
     UpdateData,
 };
-use reqwest::Method;
-use serde::{Deserialize, Serialize};
+use smbcloud_ascapi_core::Client;
+use smbcloud_ascapi_core::Result;
 
 pub const RESOURCE_TYPE: &str = "appStoreVersionLocalizations";
 
@@ -54,8 +55,39 @@ pub struct AppStoreVersionLocalizationRelationships {
     pub app_store_version: ToOne,
 }
 
-impl Client {
-    pub async fn list_app_store_version_localizations(
+/// Per-locale description, keywords, and release notes.
+///
+/// An extension trait rather than inherent methods, because `Client`
+/// lives in the core crate and Rust only allows inherent impls in the
+/// crate that defines the type. Import it, or the crate's `prelude`,
+/// to call these on a `Client`.
+#[async_trait]
+pub trait AppStoreVersionLocalizationsApi {
+    async fn list_app_store_version_localizations(
+        &self,
+        app_store_version_id: &str,
+    ) -> Result<Vec<AppStoreVersionLocalization>>;
+
+    /// `POST /v1/appStoreVersionLocalizations` — adds a locale's
+    /// description/keywords/etc to an `AppStoreVersion`.
+    async fn create_app_store_version_localization(
+        &self,
+        app_store_version_id: &str,
+        attributes: AppStoreVersionLocalizationCreateAttributes,
+    ) -> Result<AppStoreVersionLocalization>;
+
+    async fn update_app_store_version_localization(
+        &self,
+        id: &str,
+        fields: AppStoreVersionLocalizationFields,
+    ) -> Result<AppStoreVersionLocalization>;
+
+    async fn delete_app_store_version_localization(&self, id: &str) -> Result<()>;
+}
+
+#[async_trait]
+impl AppStoreVersionLocalizationsApi for Client {
+    async fn list_app_store_version_localizations(
         &self,
         app_store_version_id: &str,
     ) -> Result<Vec<AppStoreVersionLocalization>> {
@@ -66,9 +98,7 @@ impl Client {
         Ok(doc.data)
     }
 
-    /// `POST /v1/appStoreVersionLocalizations` — adds a locale's
-    /// description/keywords/etc to an `AppStoreVersion`.
-    pub async fn create_app_store_version_localization(
+    async fn create_app_store_version_localization(
         &self,
         app_store_version_id: &str,
         attributes: AppStoreVersionLocalizationCreateAttributes,
@@ -98,7 +128,7 @@ impl Client {
         Ok(doc.data)
     }
 
-    pub async fn update_app_store_version_localization(
+    async fn update_app_store_version_localization(
         &self,
         id: &str,
         fields: AppStoreVersionLocalizationFields,
@@ -116,7 +146,7 @@ impl Client {
         Ok(doc.data)
     }
 
-    pub async fn delete_app_store_version_localization(&self, id: &str) -> Result<()> {
+    async fn delete_app_store_version_localization(&self, id: &str) -> Result<()> {
         let path = format!("/v1/appStoreVersionLocalizations/{id}");
         self.request_no_content::<()>(Method::DELETE, &path, &[], None)
             .await

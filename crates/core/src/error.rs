@@ -20,6 +20,12 @@ pub enum Error {
 
     #[error("App Store Connect API returned {status}: {detail}")]
     Api { status: u16, detail: String },
+
+    #[error("failed to generate an RSA key pair: {0}")]
+    KeyGeneration(String),
+
+    #[error("failed to build the certificate signing request: {0}")]
+    CsrGeneration(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
