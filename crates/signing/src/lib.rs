@@ -1,8 +1,9 @@
 //! Apple code signing through App Store Connect.
 //!
-//! Two halves that only make sense together: [`csr`] generates an RSA key
-//! pair and a signing request locally, and [`certificate`] asks Apple to
-//! certify it.
+//! Three parts. [`csr`] generates an RSA key pair and a signing request
+//! locally, [`certificate`] asks Apple to certify it, and [`profile`] binds
+//! a certificate to an App ID so signing knows which entitlements are
+//! allowed.
 //!
 //! The division of labour is the whole point. Apple never receives, and
 //! never returns, a private key. You keep it; they vouch for its public
@@ -16,7 +17,9 @@
 
 pub mod certificate;
 pub mod csr;
+pub mod profile;
 
 pub mod prelude {
     pub use crate::certificate::CertificatesApi;
+    pub use crate::profile::ProfilesApi;
 }

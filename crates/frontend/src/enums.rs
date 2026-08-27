@@ -29,6 +29,10 @@ pub fn bundle_id_platform_from_str(value: &str) -> Result<BundleIdPlatform, Stri
         "ios" => Ok(BundleIdPlatform::Ios),
         "mac_os" | "macos" => Ok(BundleIdPlatform::MacOs),
         "universal" => Ok(BundleIdPlatform::Universal),
+        // Accepted so a round trip through this mapper does not lose a
+        // value the API itself returns. Registering one is a different
+        // flow than an app bundle ID, and Apple rejects it here.
+        "services" => Ok(BundleIdPlatform::Services),
         other => Err(format!(
             "unknown bundle ID platform {other:?}; expected one of ios, mac_os, universal"
         )),

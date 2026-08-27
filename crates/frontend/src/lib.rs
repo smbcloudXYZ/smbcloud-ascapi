@@ -16,10 +16,14 @@
 //!   refactor away from being bypassed.
 //! - **No certificate bodies either.** They are large, never needed to
 //!   decide what to do next, and would otherwise land in a transcript.
+//!   [`profiles::ProfileSummary`] applies the same rule to
+//!   `profileContent`, and [`profiles::download_profile`] returns the path
+//!   it wrote instead.
 
 pub mod certificates;
 pub mod enums;
 pub mod env;
+pub mod profiles;
 pub mod time;
 
 pub use certificates::{
@@ -27,4 +31,5 @@ pub use certificates::{
 };
 pub use enums::{bundle_id_platform_from_str, display_type_from_str, platform_from_str};
 pub use env::api_key_from_env;
+pub use profiles::{download_profile, profile_type_from_str, DownloadedProfile, ProfileSummary};
 pub use time::{is_expired, now_iso8601};
