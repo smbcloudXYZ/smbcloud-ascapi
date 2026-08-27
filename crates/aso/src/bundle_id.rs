@@ -22,6 +22,16 @@ pub enum BundleIdPlatform {
     MacOs,
     #[serde(rename = "UNIVERSAL")]
     Universal,
+    /// Not an app platform: the identifier kind Apple assigns to Services
+    /// IDs (Sign in with Apple, push-only identifiers, and similar).
+    ///
+    /// Present because `GET /v1/bundleIds` returns every identifier the
+    /// team owns, mixed together. Without this variant, one Services ID
+    /// anywhere in the account fails the deserialization of the whole
+    /// list, so listing breaks for reasons that have nothing to do with
+    /// the app being looked up.
+    #[serde(rename = "SERVICES")]
+    Services,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +79,11 @@ impl BundleIdsApi for Client {
         if let Some(identifier) = filter_identifier {
             query.push(("filter[identifier]", identifier));
         }
+        // Apple's default page size is 20. Without this an unfiltered list
+        // silently stops at the first 20 identifiers, which reads as "that
+        // bundle ID is not registered" for anything further down.
+        query.push(("limit", "200"));
+
         let doc: ListDocument<BundleIdAttributes> = self
             .request(Method::GET, "/v1/bundleIds", &query, None::<&()>)
             .await?;
@@ -87,5 +102,50 @@ impl BundleIdsApi for Client {
             .request(Method::POST, "/v1/bundleIds", &[], Some(&body))
             .await?;
         Ok(doc.data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_services_identifier_does_not_break_the_list() {
+        // Regression: `GET /v1/bundleIds` returns every identifier a team
+        // owns, and a single Services ID used to fail the whole response's
+        // deserialization — so `bundle-ids list` reported nothing at all
+        // for accounts that have one.
+        let body = serde_json::json!({
+            "data": [
+                {
+                    "id": "AAA",
+                    "type": "bundleIds",
+                    "attributes": {
+                        "name": "An app",
+                        "identifier": "xyz.example.app",
+                        "platform": "UNIVERSAL",
+                        "seedId": "TEAMID"
+                    }
+                },
+                {
+                    "id": "BBB",
+                    "type": "bundleIds",
+                    "attributes": {
+                        "name": "Sign in with Apple",
+                        "identifier": "xyz.example.service",
+                        "platform": "SERVICES",
+                        "seedId": "TEAMID"
+                    }
+                }
+            ]
+        });
+
+        let doc: ListDocument<BundleIdAttributes> =
+            serde_json::from_value(body).expect("a Services identifier must not fail the list");
+        assert_eq!(doc.data.len(), 2);
+        assert_eq!(
+            doc.data[1].attributes.platform,
+            Some(BundleIdPlatform::Services)
+        );
     }
 }

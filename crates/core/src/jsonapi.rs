@@ -48,6 +48,19 @@ pub struct ToOne {
     pub data: ResourceId,
 }
 
+/// A to-many relationship payload, e.g. `relationships.certificates` on a
+/// `POST /v1/profiles` body.
+///
+/// Apple distinguishes an empty array from an absent relationship: sending
+/// `{"data": []}` for `devices` means "no devices", which a development
+/// profile rejects, while omitting the key entirely is what an App Store
+/// profile wants. Callers that mean "absent" should pass `None` for the
+/// whole field rather than an empty `ToMany`.
+#[derive(Debug, Clone, Serialize)]
+pub struct ToMany {
+    pub data: Vec<ResourceId>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CreateBody<A, R> {
     pub data: CreateData<A, R>,
