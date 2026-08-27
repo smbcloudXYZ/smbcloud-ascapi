@@ -9,7 +9,7 @@ from the other:
 | --- | --- |
 | `smbcloud-ascapi-core` | Shared transport: JWT auth, the HTTP client, JSON:API envelopes, error types |
 | `smbcloud-ascapi-aso` | App Metadata: apps, app infos, versions, bundle IDs, localizations, screenshots |
-| `smbcloud-ascapi-signing` | Code signing: certificates, plus local RSA key pair and CSR generation |
+| `smbcloud-ascapi-signing` | Code signing: certificates and provisioning profiles, plus local RSA key pair and CSR generation |
 | `smbcloud-ascapi-frontend` | Operations both surfaces share, so the CLI and the MCP server agree by construction |
 | `smbcloud-ascapi-mcp` | The MCP contract and stdio server |
 | `smbcloud-ascapi-cli` | The `ascapi` binary: clap command tree, plus `--mcp` |

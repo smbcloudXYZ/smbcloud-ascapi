@@ -17,6 +17,9 @@ use smbcloud_ascapi_core::{ApiKey, Client};
 use smbcloud_ascapi_signing::certificate::{CertificateCreateAttributes, CertificateType};
 use smbcloud_ascapi_signing::csr::generate_certificate_request;
 use smbcloud_ascapi_signing::prelude::*;
+use smbcloud_ascapi_signing::profile::{
+    ProfileCreateAttributes, ProfileCreateRelationships, ProfileType,
+};
 use std::path::PathBuf;
 
 /// Add/update App Store Connect app metadata (apps, app infos, app store
@@ -103,6 +106,131 @@ enum Command {
         #[command(subcommand)]
         command: CertificatesCommand,
     },
+    /// Provisioning profiles: what a bundle ID is allowed to claim, and
+    /// which certificates may sign it. Create a new one after changing an
+    /// App ID's capabilities — existing profiles never pick the change up.
+    Profiles {
+        #[command(subcommand)]
+        command: ProfilesCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProfilesCommand {
+    /// List the team's profiles, newest expiry last.
+    ///
+    /// `profileContent` is deliberately not shown; use `download` for the
+    /// file itself.
+    List {
+        /// Only show profiles with this exact name. Apple allows
+        /// duplicates, so this can still match several.
+        #[arg(long)]
+        name: Option<String>,
+        /// Only show one type.
+        #[arg(long, value_enum)]
+        r#type: Option<CliProfileType>,
+    },
+    /// Create a profile over a bundle ID and one or more certificates.
+    ///
+    /// This is the only way to pick up a capability added to the App ID
+    /// after an existing profile was made: profiles are snapshots, and
+    /// Apple keeps serving the stale one as ACTIVE until its certificate
+    /// dies. Apple does not treat an equivalent profile as a duplicate, so
+    /// repeated runs accumulate profiles rather than replacing one.
+    Create {
+        /// Label shown in the developer portal.
+        #[arg(long)]
+        name: String,
+        #[arg(long, value_enum)]
+        r#type: CliProfileType,
+        /// Resource id of the bundle ID (from `bundle-ids list`), not the
+        /// reverse-DNS identifier.
+        #[arg(long)]
+        bundle_id: String,
+        /// Certificate resource id (from `certificates list`). Repeat for
+        /// several.
+        #[arg(long = "certificate", required = true)]
+        certificates: Vec<String>,
+        /// Device resource id. Only meaningful for development and ad hoc
+        /// types; ignored for store profiles, which Apple rejects if sent
+        /// devices.
+        #[arg(long = "device")]
+        devices: Vec<String>,
+    },
+    /// Write a profile's bytes to a file.
+    ///
+    /// The output is the binary `.provisionprofile`/`.mobileprovision` a
+    /// bundle embeds, not JSON.
+    Download {
+        id: String,
+        /// Where to write the profile.
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Delete a profile.
+    ///
+    /// Narrower than revoking a certificate: builds already signed with it
+    /// keep working, but new signing against it fails.
+    Delete {
+        id: String,
+        /// Required. Pass the profile id again to confirm.
+        #[arg(long)]
+        confirm: String,
+    },
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum CliProfileType {
+    /// iOS development — device-scoped.
+    IosAppDevelopment,
+    /// iOS App Store distribution.
+    IosAppStore,
+    /// iOS ad hoc — device-scoped.
+    IosAppAdhoc,
+    /// iOS in-house (Enterprise) distribution.
+    IosAppInhouse,
+    /// macOS development — device-scoped.
+    MacAppDevelopment,
+    /// Mac App Store distribution — the embedded.provisionprofile a MAS
+    /// submission carries.
+    MacAppStore,
+    /// Developer ID — distribution outside the App Store.
+    MacAppDirect,
+    /// tvOS development — device-scoped.
+    TvosAppDevelopment,
+    /// tvOS App Store distribution.
+    TvosAppStore,
+    /// tvOS ad hoc — device-scoped.
+    TvosAppAdhoc,
+    /// tvOS in-house (Enterprise) distribution.
+    TvosAppInhouse,
+    /// Mac Catalyst development — device-scoped.
+    MacCatalystAppDevelopment,
+    /// Mac Catalyst App Store distribution.
+    MacCatalystAppStore,
+    /// Mac Catalyst Developer ID distribution.
+    MacCatalystAppDirect,
+}
+
+impl From<CliProfileType> for ProfileType {
+    fn from(value: CliProfileType) -> Self {
+        match value {
+            CliProfileType::IosAppDevelopment => ProfileType::IosAppDevelopment,
+            CliProfileType::IosAppStore => ProfileType::IosAppStore,
+            CliProfileType::IosAppAdhoc => ProfileType::IosAppAdHoc,
+            CliProfileType::IosAppInhouse => ProfileType::IosAppInHouse,
+            CliProfileType::MacAppDevelopment => ProfileType::MacAppDevelopment,
+            CliProfileType::MacAppStore => ProfileType::MacAppStore,
+            CliProfileType::MacAppDirect => ProfileType::MacAppDirect,
+            CliProfileType::TvosAppDevelopment => ProfileType::TvOsAppDevelopment,
+            CliProfileType::TvosAppStore => ProfileType::TvOsAppStore,
+            CliProfileType::TvosAppAdhoc => ProfileType::TvOsAppAdHoc,
+            CliProfileType::TvosAppInhouse => ProfileType::TvOsAppInHouse,
+            CliProfileType::MacCatalystAppDevelopment => ProfileType::MacCatalystAppDevelopment,
+            CliProfileType::MacCatalystAppStore => ProfileType::MacCatalystAppStore,
+            CliProfileType::MacCatalystAppDirect => ProfileType::MacCatalystAppDirect,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -502,6 +630,7 @@ async fn main() -> Result<()> {
             run_app_screenshots(&client, command, cli.dry_run).await
         }
         Command::Certificates { command } => run_certificates(&client, command, cli.dry_run).await,
+        Command::Profiles { command } => run_profiles(&client, command, cli.dry_run).await,
     }
 }
 
@@ -1003,6 +1132,102 @@ async fn run_certificates(
             }
             client.revoke_certificate(&id).await?;
             print_json(&serde_json::json!({ "revoked": id }))
+        }
+    }
+}
+
+async fn run_profiles(client: &Client, command: ProfilesCommand, dry_run: bool) -> Result<()> {
+    use smbcloud_ascapi_frontend::profiles::{download_profile, ProfileSummary};
+    use smbcloud_ascapi_frontend::time::now_iso8601;
+
+    match command {
+        ProfilesCommand::List { name, r#type } => {
+            let mut profiles = client
+                .list_profiles(name.as_deref(), r#type.map(Into::into))
+                .await?;
+            profiles.sort_by(|a, b| {
+                a.attributes
+                    .expiration_date
+                    .cmp(&b.attributes.expiration_date)
+            });
+            let now = now_iso8601();
+            let summaries: Vec<_> = profiles
+                .iter()
+                .map(|profile| ProfileSummary::from_resource(profile, &now))
+                .collect();
+            print_json(&summaries)
+        }
+
+        ProfilesCommand::Create {
+            name,
+            r#type,
+            bundle_id,
+            certificates,
+            devices,
+        } => {
+            let profile_type: ProfileType = r#type.into();
+
+            // Say so rather than dropping them silently: a caller who
+            // passed devices to a store profile has misunderstood
+            // something, and the created profile will not be what they
+            // expect.
+            if !devices.is_empty() && !profile_type.takes_devices() {
+                eprintln!(
+                    "note: {} does not take devices; ignoring the {} passed",
+                    profile_type.as_api_str(),
+                    devices.len()
+                );
+            }
+
+            let relationships =
+                ProfileCreateRelationships::new(profile_type, &bundle_id, &certificates, &devices);
+            let attributes = ProfileCreateAttributes {
+                name: name.clone(),
+                profile_type,
+            };
+
+            if dry_run {
+                print_json(&serde_json::json!({
+                    "data": {
+                        "type": "profiles",
+                        "attributes": attributes,
+                        "relationships": relationships,
+                    }
+                }))?;
+                return Ok(());
+            }
+
+            let profile = client.create_profile(attributes, relationships).await?;
+            print_json(&ProfileSummary::from_resource(&profile, &now_iso8601()))
+        }
+
+        ProfilesCommand::Download { id, output } => {
+            if dry_run {
+                println!(
+                    "# dry run — would write profile {id} to {}",
+                    output.display()
+                );
+                return Ok(());
+            }
+            let downloaded = download_profile(client, &id, &output)
+                .await
+                .map_err(anyhow::Error::msg)?;
+            print_json(&downloaded)
+        }
+
+        ProfilesCommand::Delete { id, confirm } => {
+            if confirm != id {
+                anyhow::bail!(
+                    "refusing to delete: pass --confirm {id} to acknowledge that signing \
+                     against this profile stops working until a replacement exists"
+                );
+            }
+            if dry_run {
+                println!("# dry run — would delete profile {id}");
+                return Ok(());
+            }
+            client.delete_profile(&id).await?;
+            print_json(&serde_json::json!({ "deleted": id }))
         }
     }
 }
