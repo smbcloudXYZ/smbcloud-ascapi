@@ -1671,6 +1671,7 @@ dependencies = [
  "smbcloud-ascapi-core",
  "smbcloud-ascapi-frontend",
  "smbcloud-ascapi-mcp",
+ "smbcloud-ascapi-pricing",
  "smbcloud-ascapi-signing",
  "tokio",
 ]
@@ -1713,6 +1714,17 @@ dependencies = [
  "smbcloud-ascapi-frontend",
  "smbcloud-ascapi-signing",
  "tokio",
+]
+
+[[package]]
+name = "smbcloud-ascapi-pricing"
+version = "0.1.1"
+dependencies = [
+ "async-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "smbcloud-ascapi-core",
 ]
 
 [[package]]

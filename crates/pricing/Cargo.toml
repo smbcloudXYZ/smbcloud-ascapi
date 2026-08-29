@@ -1,0 +1,20 @@
+[package]
+name = "smbcloud-ascapi-pricing"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "App Store Connect pricing resources: app price schedules, and the per-territory prices and price points hanging off them."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+smbcloud-ascapi-core = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

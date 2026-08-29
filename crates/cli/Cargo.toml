@@ -20,6 +20,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 smbcloud-ascapi-aso = { workspace = true }
 smbcloud-ascapi-core = { workspace = true }
+smbcloud-ascapi-pricing = { workspace = true }
 smbcloud-ascapi-signing = { workspace = true }
 smbcloud-ascapi-frontend = { workspace = true }
 smbcloud-ascapi-mcp = { workspace = true }
