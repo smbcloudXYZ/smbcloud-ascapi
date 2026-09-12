@@ -83,7 +83,7 @@ impl Client {
         query: &[(&str, &str)],
         body: Option<&B>,
     ) -> Result<T> {
-        let (status, bytes) = self.send(method, path, query, body).await?;
+        let (status, bytes) = self.send(method, path, query, body, &[]).await?;
         if !status.is_success() {
             return Err(api_error(status, &bytes));
         }
@@ -98,11 +98,29 @@ impl Client {
         query: &[(&str, &str)],
         body: Option<&B>,
     ) -> Result<()> {
-        let (status, bytes) = self.send(method, path, query, body).await?;
+        let (status, bytes) = self.send(method, path, query, body, &[]).await?;
         if !status.is_success() {
             return Err(api_error(status, &bytes));
         }
         Ok(())
+    }
+
+    /// Send an authenticated request whose successful response is raw bytes.
+    /// Domain APIs use this for endpoints such as sales reports that return a
+    /// compressed file instead of a JSON:API document.
+    pub async fn request_bytes<B: Serialize>(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(&str, &str)],
+        body: Option<&B>,
+        headers: &[(&str, &str)],
+    ) -> Result<Vec<u8>> {
+        let (status, bytes) = self.send(method, path, query, body, headers).await?;
+        if !status.is_success() {
+            return Err(api_error(status, &bytes));
+        }
+        Ok(bytes)
     }
 
     async fn send<B: Serialize>(
@@ -111,6 +129,7 @@ impl Client {
         path: &str,
         query: &[(&str, &str)],
         body: Option<&B>,
+        headers: &[(&str, &str)],
     ) -> Result<(StatusCode, Vec<u8>)> {
         let url = format!("{}{}", self.base_url, path);
         let token = self.bearer_token()?;
@@ -120,6 +139,9 @@ impl Client {
         }
         if let Some(b) = body {
             req = req.json(b);
+        }
+        for (name, value) in headers {
+            req = req.header(*name, *value);
         }
 
         let response = req.send().await?;
