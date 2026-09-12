@@ -657,35 +657,58 @@ fn sales_report_as_json(gzip: &[u8]) -> Result<Vec<serde_json::Value>> {
     let mut reader = csv::ReaderBuilder::new()
         .delimiter(b'\t')
         .has_headers(true)
-        .flexible(false)
+        .flexible(true)
         .from_reader(decoder);
 
-    let headers = reader
+    let raw_headers = reader
         .headers()
         .context("reading the TSV header from Apple's sales report")?
         .iter()
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    if headers.is_empty() || headers.iter().any(|header| header.is_empty()) {
-        anyhow::bail!("Apple's sales report has an empty TSV header")
+    if raw_headers.is_empty() {
+        anyhow::bail!("Apple's sales report has no TSV headers")
     }
-    let unique_headers = headers.iter().collect::<HashSet<_>>();
-    if unique_headers.len() != headers.len() {
-        anyhow::bail!("Apple's sales report has duplicate TSV headers")
-    }
+
+    // Apple may add blank or repeated columns. JSON objects require unique,
+    // non-empty keys, so retain valid headers and assign stable fallbacks to
+    // the rest instead of discarding an otherwise usable report.
+    let mut used_headers = HashSet::new();
+    let headers = raw_headers
+        .into_iter()
+        .enumerate()
+        .map(|(index, header)| {
+            let base = if header.is_empty() {
+                format!("column_{}", index + 1)
+            } else {
+                header
+            };
+            let mut name = base.clone();
+            let mut suffix = 2;
+            while !used_headers.insert(name.clone()) {
+                name = format!("{base}_{suffix}");
+                suffix += 1;
+            }
+            name
+        })
+        .collect::<Vec<_>>();
 
     let mut rows = Vec::new();
     for (index, record) in reader.records().enumerate() {
         let record = record.with_context(|| format!("parsing TSV row {}", index + 2))?;
-        if record.len() != headers.len() {
-            anyhow::bail!(
-                "TSV row {} has {} columns; expected {}",
-                index + 2,
-                record.len(),
-                headers.len()
-            )
+        let mut row_headers = headers.clone();
+        let mut used_row_headers = row_headers.iter().cloned().collect::<HashSet<_>>();
+        for column in row_headers.len()..record.len() {
+            let base = format!("extra_column_{}", column + 1);
+            let mut name = base.clone();
+            let mut suffix = 2;
+            while !used_row_headers.insert(name.clone()) {
+                name = format!("{base}_{suffix}");
+                suffix += 1;
+            }
+            row_headers.push(name);
         }
-        let object = headers
+        let object = row_headers
             .iter()
             .zip(record.iter())
             .map(|(header, value)| (header.clone(), Value::String(value.to_owned())))
@@ -1465,9 +1488,20 @@ mod tests {
     }
 
     #[test]
-    fn sales_report_rejects_mismatched_rows() {
-        let error = sales_report_as_json(&gzip("Country\tUnits\nUS\n")).unwrap_err();
-        assert!(error.to_string().contains("parsing TSV row 2"));
+    fn sales_report_accepts_rows_with_missing_or_extra_fields() {
+        let rows = sales_report_as_json(&gzip("Country\tUnits\nUS\nCA\t3\textra\n")).unwrap();
+
+        assert_eq!(
+            rows,
+            vec![
+                serde_json::json!({ "Country": "US" }),
+                serde_json::json!({
+                    "Country": "CA",
+                    "Units": "3",
+                    "extra_column_3": "extra",
+                }),
+            ]
+        );
     }
 
     #[test]
@@ -1479,8 +1513,16 @@ mod tests {
     }
 
     #[test]
-    fn sales_report_rejects_duplicate_headers() {
-        let error = sales_report_as_json(&gzip("Country\tCountry\nUS\tCA\n")).unwrap_err();
-        assert!(error.to_string().contains("duplicate TSV headers"));
+    fn sales_report_disambiguates_blank_and_duplicate_headers() {
+        let rows = sales_report_as_json(&gzip("Country\t\tCountry\nUS\t3\tCA\n")).unwrap();
+
+        assert_eq!(
+            rows,
+            vec![serde_json::json!({
+                "Country": "US",
+                "column_2": "3",
+                "Country_2": "CA",
+            })]
+        );
     }
 }
