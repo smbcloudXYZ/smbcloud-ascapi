@@ -14,6 +14,8 @@ use smbcloud_ascapi_aso::app_store_version_localization::{
 use smbcloud_ascapi_aso::bundle_id::{BundleIdCreateAttributes, BundleIdPlatform};
 use smbcloud_ascapi_aso::prelude::*;
 use smbcloud_ascapi_core::{ApiKey, Client};
+use smbcloud_ascapi_pricing::app_price::PriceKind;
+use smbcloud_ascapi_pricing::prelude::*;
 use smbcloud_ascapi_signing::certificate::{CertificateCreateAttributes, CertificateType};
 use smbcloud_ascapi_signing::csr::generate_certificate_request;
 use smbcloud_ascapi_signing::prelude::*;
@@ -99,6 +101,12 @@ enum Command {
     AppScreenshots {
         #[command(subcommand)]
         command: AppScreenshotsCommand,
+    },
+    /// What an app costs, per territory — the manual price a human set
+    /// and the automatic ones Apple converted it into.
+    AppPrices {
+        #[command(subcommand)]
+        command: AppPricesCommand,
     },
     /// Signing certificates: list what the team holds, issue a new one, or
     /// revoke an old one.
@@ -298,6 +306,32 @@ impl From<CliCertificateType> for CertificateType {
             CliCertificateType::DeveloperIdApplication => CertificateType::DeveloperIdApplication,
         }
     }
+}
+
+#[derive(Subcommand)]
+enum AppPricesCommand {
+    /// `GET /v1/appPriceSchedules/{app_id}` — the base territory Apple
+    /// converts every other storefront from.
+    Schedule { app_id: String },
+    /// `GET /v1/appPriceSchedules/{app_id}/manualPrices`, joined against
+    /// the price points and territories so the money is actually visible.
+    ///
+    /// Defaults to the manual prices — what a human set, usually one row
+    /// in the base territory. `--automatic` instead lists what Apple
+    /// converted that into for all ~178 storefronts, which is where a
+    /// scheduled conversion shows up as a near-future `endDate`.
+    List {
+        app_id: String,
+        /// List Apple's converted per-storefront prices rather than the
+        /// manually set ones.
+        #[arg(long)]
+        automatic: bool,
+        /// Narrow to one territory code, e.g. IDN. Applied by Apple as
+        /// `filter[territory]`, so it is much cheaper than fetching every
+        /// storefront.
+        #[arg(long)]
+        territory: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -629,6 +663,7 @@ async fn main() -> Result<()> {
         Command::AppScreenshots { command } => {
             run_app_screenshots(&client, command, cli.dry_run).await
         }
+        Command::AppPrices { command } => run_app_prices(&client, command).await,
         Command::Certificates { command } => run_certificates(&client, command, cli.dry_run).await,
         Command::Profiles { command } => run_profiles(&client, command, cli.dry_run).await,
     }
@@ -1036,6 +1071,31 @@ fn now_iso8601() -> String {
         (secs_of_day % 3600) / 60,
         secs_of_day % 60
     )
+}
+
+/// Read-only throughout, so unlike its siblings it takes no `dry_run`:
+/// there is no request body to preview.
+async fn run_app_prices(client: &Client, command: AppPricesCommand) -> Result<()> {
+    match command {
+        AppPricesCommand::Schedule { app_id } => {
+            print_json(&client.get_app_price_schedule(&app_id).await?)
+        }
+        AppPricesCommand::List {
+            app_id,
+            automatic,
+            territory,
+        } => {
+            let kind = if automatic {
+                PriceKind::Automatic
+            } else {
+                PriceKind::Manual
+            };
+            let prices = client
+                .list_app_prices(&app_id, kind, territory.as_deref())
+                .await?;
+            print_json(&prices)
+        }
+    }
 }
 
 async fn run_certificates(

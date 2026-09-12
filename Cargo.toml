@@ -4,6 +4,7 @@ members = [
     "crates/core",
     "crates/aso",
     "crates/signing",
+    "crates/pricing",
     "crates/frontend",
     "crates/mcp",
     "crates/cli",
@@ -20,6 +21,7 @@ repository = "https://github.com/smbcloudXYZ/smbcloud-ascapi"
 smbcloud-ascapi-core = { version = "0.1.0", path = "crates/core" }
 smbcloud-ascapi-aso = { version = "0.1.0", path = "crates/aso" }
 smbcloud-ascapi-signing = { version = "0.1.0", path = "crates/signing" }
+smbcloud-ascapi-pricing = { version = "0.1.0", path = "crates/pricing" }
 smbcloud-ascapi-frontend = { version = "0.1.0", path = "crates/frontend" }
 smbcloud-ascapi-mcp = { version = "0.1.0", path = "crates/mcp" }
 anyhow = "1"
