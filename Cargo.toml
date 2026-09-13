@@ -5,6 +5,7 @@ members = [
     "crates/aso",
     "crates/signing",
     "crates/pricing",
+    "crates/reports",
     "crates/frontend",
     "crates/mcp",
     "crates/cli",
@@ -22,6 +23,7 @@ smbcloud-ascapi-core = { version = "0.1.0", path = "crates/core" }
 smbcloud-ascapi-aso = { version = "0.1.0", path = "crates/aso" }
 smbcloud-ascapi-signing = { version = "0.1.0", path = "crates/signing" }
 smbcloud-ascapi-pricing = { version = "0.1.0", path = "crates/pricing" }
+smbcloud-ascapi-reports = { version = "0.1.0", path = "crates/reports" }
 smbcloud-ascapi-frontend = { version = "0.1.0", path = "crates/frontend" }
 smbcloud-ascapi-mcp = { version = "0.1.0", path = "crates/mcp" }
 anyhow = "1"
@@ -34,6 +36,8 @@ thiserror = "2.0"
 tokio = "1"
 async-trait = "0.1"
 base64 = "0.22"
+csv = "1"
+flate2 = "1"
 rcgen = { version = "0.14", default-features = false, features = ["pem", "crypto", "aws_lc_rs"] }
 rsa = "0.9"
 rand = "0.8"

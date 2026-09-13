@@ -16,12 +16,15 @@ path = "src/main.rs"
 anyhow = { workspace = true }
 base64 = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
+csv = { workspace = true }
+flate2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 smbcloud-ascapi-aso = { workspace = true }
 smbcloud-ascapi-core = { workspace = true }
 smbcloud-ascapi-pricing = { workspace = true }
 smbcloud-ascapi-signing = { workspace = true }
+smbcloud-ascapi-reports = { workspace = true }
 smbcloud-ascapi-frontend = { workspace = true }
 smbcloud-ascapi-mcp = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

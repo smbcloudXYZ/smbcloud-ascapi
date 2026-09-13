@@ -25,6 +25,35 @@ export ASC_ISSUER_ID=<issuer id>
 export ASC_PRIVATE_KEY_PATH=/path/to/AuthKey_XXXXXXXXXX.p8
 ```
 
+## Sales reports
+
+`sales-reports download` retrieves account-level App Store sales data. It is
+for paid-app and in-app purchase reporting across the team; it is not the
+per-customer transaction-history API. Reports are returned as a JSON array
+whose keys are Apple's original TSV column names and whose values are strings.
+
+Set the vendor number shown in App Store Connect → Payments and Financial
+Reports, then request a report date and frequency:
+
+```bash
+export ASC_VENDOR_NUMBER=12345678
+
+# Yesterday's paid-app and in-app purchase sales.
+ascapi sales-reports download \
+  --frequency DAILY \
+  --report-date 2026-09-11
+
+# Save a monthly report rather than printing it to stdout.
+ascapi sales-reports download \
+  --frequency MONTHLY \
+  --report-date 2026-08 \
+  --output sales-2026-08.json
+```
+
+`--report-type` and `--report-subtype` default to `SALES` and `SUMMARY`.
+Pass the exact Apple values to request another supported sales-report layout;
+use `--version` where that layout requires a report format version.
+
 ## Signing certificates
 
 ```bash

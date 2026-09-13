@@ -16,12 +16,15 @@ use smbcloud_ascapi_aso::prelude::*;
 use smbcloud_ascapi_core::{ApiKey, Client};
 use smbcloud_ascapi_pricing::app_price::PriceKind;
 use smbcloud_ascapi_pricing::prelude::*;
+use smbcloud_ascapi_reports::prelude::*;
+use smbcloud_ascapi_reports::SalesReportRequest;
 use smbcloud_ascapi_signing::certificate::{CertificateCreateAttributes, CertificateType};
 use smbcloud_ascapi_signing::csr::generate_certificate_request;
 use smbcloud_ascapi_signing::prelude::*;
 use smbcloud_ascapi_signing::profile::{
     ProfileCreateAttributes, ProfileCreateRelationships, ProfileType,
 };
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 /// Add/update App Store Connect app metadata (apps, app infos, app store
@@ -120,6 +123,40 @@ enum Command {
     Profiles {
         #[command(subcommand)]
         command: ProfilesCommand,
+    },
+    /// Download account-level App Store sales reports as JSON.
+    SalesReports {
+        #[command(subcommand)]
+        command: SalesReportsCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum SalesReportsCommand {
+    /// Download, decompress, and convert one Apple sales report to JSON.
+    Download {
+        /// App Store Connect vendor number, from Payments and Financial
+        /// Reports. May also be set through ASC_VENDOR_NUMBER.
+        #[arg(long, env = "ASC_VENDOR_NUMBER")]
+        vendor_number: String,
+        /// Apple report frequency, such as DAILY, WEEKLY, MONTHLY, or YEARLY.
+        #[arg(long)]
+        frequency: String,
+        /// Report date in Apple's required format for the selected frequency.
+        #[arg(long)]
+        report_date: String,
+        /// Apple report type. Defaults to SALES for paid-app and IAP sales.
+        #[arg(long, default_value = "SALES")]
+        report_type: String,
+        /// Apple report subtype. Defaults to SUMMARY.
+        #[arg(long, default_value = "SUMMARY")]
+        report_subtype: String,
+        /// Optional Apple report format version, for report types that use one.
+        #[arg(long)]
+        version: Option<String>,
+        /// Write the JSON array to this file instead of stdout.
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
 }
 
@@ -610,6 +647,77 @@ fn dry_run_guard(dry_run: bool, value: &impl serde::Serialize) -> Result<bool> {
     Ok(dry_run)
 }
 
+/// Convert Apple's gzip-compressed TSV report to JSON without normalizing
+/// columns: report layouts vary by report type and Apple can add columns.
+fn sales_report_as_json(gzip: &[u8]) -> Result<Vec<serde_json::Value>> {
+    use flate2::read::GzDecoder;
+    use serde_json::{Map, Value};
+
+    let decoder = GzDecoder::new(gzip);
+    let mut reader = csv::ReaderBuilder::new()
+        .delimiter(b'\t')
+        .has_headers(true)
+        .flexible(true)
+        .from_reader(decoder);
+
+    let raw_headers = reader
+        .headers()
+        .context("reading the TSV header from Apple's sales report")?
+        .iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if raw_headers.is_empty() {
+        anyhow::bail!("Apple's sales report has no TSV headers")
+    }
+
+    // Apple may add blank or repeated columns. JSON objects require unique,
+    // non-empty keys, so retain valid headers and assign stable fallbacks to
+    // the rest instead of discarding an otherwise usable report.
+    let mut used_headers = HashSet::new();
+    let headers = raw_headers
+        .into_iter()
+        .enumerate()
+        .map(|(index, header)| {
+            let base = if header.is_empty() {
+                format!("column_{}", index + 1)
+            } else {
+                header
+            };
+            let mut name = base.clone();
+            let mut suffix = 2;
+            while !used_headers.insert(name.clone()) {
+                name = format!("{base}_{suffix}");
+                suffix += 1;
+            }
+            name
+        })
+        .collect::<Vec<_>>();
+
+    let mut rows = Vec::new();
+    for (index, record) in reader.records().enumerate() {
+        let record = record.with_context(|| format!("parsing TSV row {}", index + 2))?;
+        let mut row_headers = headers.clone();
+        let mut used_row_headers = row_headers.iter().cloned().collect::<HashSet<_>>();
+        for column in row_headers.len()..record.len() {
+            let base = format!("extra_column_{}", column + 1);
+            let mut name = base.clone();
+            let mut suffix = 2;
+            while !used_row_headers.insert(name.clone()) {
+                name = format!("{base}_{suffix}");
+                suffix += 1;
+            }
+            row_headers.push(name);
+        }
+        let object = row_headers
+            .iter()
+            .zip(record.iter())
+            .map(|(header, value)| (header.clone(), Value::String(value.to_owned())))
+            .collect::<Map<_, _>>();
+        rows.push(Value::Object(object));
+    }
+    Ok(rows)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -666,6 +774,7 @@ async fn main() -> Result<()> {
         Command::AppPrices { command } => run_app_prices(&client, command).await,
         Command::Certificates { command } => run_certificates(&client, command, cli.dry_run).await,
         Command::Profiles { command } => run_profiles(&client, command, cli.dry_run).await,
+        Command::SalesReports { command } => run_sales_reports(&client, command).await,
     }
 }
 
@@ -675,6 +784,40 @@ fn dirs_home() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+async fn run_sales_reports(client: &Client, command: SalesReportsCommand) -> Result<()> {
+    match command {
+        SalesReportsCommand::Download {
+            vendor_number,
+            frequency,
+            report_date,
+            report_type,
+            report_subtype,
+            version,
+            output,
+        } => {
+            let report = client
+                .download_sales_report(&SalesReportRequest {
+                    vendor_number,
+                    frequency,
+                    report_date,
+                    report_type,
+                    report_subtype,
+                    version,
+                })
+                .await?;
+            let rows = sales_report_as_json(&report)?;
+            if let Some(path) = output {
+                let json = serde_json::to_vec_pretty(&rows)?;
+                std::fs::write(&path, json)
+                    .with_context(|| format!("writing sales report JSON to {}", path.display()))?;
+            } else {
+                print_json(&rows)?;
+            }
+            Ok(())
+        }
+    }
 }
 
 async fn run_apps(client: &Client, command: AppsCommand, dry_run: bool) -> Result<()> {
@@ -1312,4 +1455,74 @@ fn write_private_key(path: &std::path::Path, pem: &str) -> std::io::Result<()> {
 fn base64_decode(input: &str) -> Result<Vec<u8>> {
     use base64::Engine;
     Ok(base64::engine::general_purpose::STANDARD.decode(input.trim())?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sales_report_as_json;
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    use std::io::Write;
+
+    fn gzip(tsv: &str) -> Vec<u8> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(tsv.as_bytes()).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    #[test]
+    fn sales_report_preserves_headers_and_string_values() {
+        let rows = sales_report_as_json(&gzip(
+            "Provider Country\tUnits\tTitle\nUS\t12\t\"An app\twith tab\"\n",
+        ))
+        .unwrap();
+
+        assert_eq!(
+            rows,
+            vec![serde_json::json!({
+                "Provider Country": "US",
+                "Units": "12",
+                "Title": "An app\twith tab",
+            })]
+        );
+    }
+
+    #[test]
+    fn sales_report_accepts_rows_with_missing_or_extra_fields() {
+        let rows = sales_report_as_json(&gzip("Country\tUnits\nUS\nCA\t3\textra\n")).unwrap();
+
+        assert_eq!(
+            rows,
+            vec![
+                serde_json::json!({ "Country": "US" }),
+                serde_json::json!({
+                    "Country": "CA",
+                    "Units": "3",
+                    "extra_column_3": "extra",
+                }),
+            ]
+        );
+    }
+
+    #[test]
+    fn sales_report_rejects_invalid_gzip() {
+        let error = sales_report_as_json(b"not a gzip file").unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("reading the TSV header from Apple's sales report"));
+    }
+
+    #[test]
+    fn sales_report_disambiguates_blank_and_duplicate_headers() {
+        let rows = sales_report_as_json(&gzip("Country\t\tCountry\nUS\t3\tCA\n")).unwrap();
+
+        assert_eq!(
+            rows,
+            vec![serde_json::json!({
+                "Country": "US",
+                "column_2": "3",
+                "Country_2": "CA",
+            })]
+        );
+    }
 }
