@@ -25,6 +25,7 @@ pub mod enums;
 pub mod env;
 pub mod profiles;
 pub mod time;
+pub mod upload;
 
 pub use certificates::{
     certificate_type_from_str, issue_certificate, CertificateSummary, IssuedCertificate,
@@ -33,3 +34,4 @@ pub use enums::{bundle_id_platform_from_str, display_type_from_str, platform_fro
 pub use env::api_key_from_env;
 pub use profiles::{download_profile, profile_type_from_str, DownloadedProfile, ProfileSummary};
 pub use time::{is_expired, now_iso8601};
+pub use upload::{upload_package, AltoolAuth, UploadOutcome};
