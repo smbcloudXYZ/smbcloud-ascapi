@@ -1,11 +1,36 @@
 use crate::auth::ApiKey;
 use crate::error::{Error, Result};
-use crate::jsonapi::ErrorDocument;
+use crate::jsonapi::{path_and_query, ErrorDocument, ListDocument, Resource};
 use reqwest::{Method, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+/// Which request to send next while walking a paginated collection: the
+/// caller's original `path`/`query`, or the page Apple's `links.next` named.
+#[derive(Debug, PartialEq, Eq)]
+enum Page<'a> {
+    /// The first page, as the caller asked for it.
+    First {
+        path: &'a str,
+        query: &'a [(&'a str, &'a str)],
+    },
+    /// A following page. Carries only a path because Apple's `next` URL
+    /// already embeds the original `include`/`filter`/`limit` plus its
+    /// `cursor`; re-appending `query` would duplicate every parameter.
+    Next(String),
+}
+
+impl<'a> Page<'a> {
+    /// The `path`/`query` pair to request this page with.
+    fn request(&self) -> (&str, &[(&str, &str)]) {
+        match self {
+            Page::First { path, query } => (*path, *query),
+            Page::Next(path) => (path.as_str(), &[]),
+        }
+    }
+}
 
 const BASE_URL: &str = "https://api.appstoreconnect.apple.com";
 // Refresh a bit before the token's real expiry so an in-flight request never
@@ -88,6 +113,40 @@ impl Client {
             return Err(api_error(status, &bytes));
         }
         Ok(serde_json::from_slice(&bytes)?)
+    }
+
+    /// Read an entire collection by following `links.next`, so a caller sees
+    /// every row rather than Apple's first page.
+    ///
+    /// `path`/`query` describe the first page only. Each later page is
+    /// requested from the absolute `links.next` Apple returns, which already
+    /// carries the original `include`/`filter`/`limit` alongside its cursor —
+    /// re-appending `query` there would duplicate every parameter.
+    ///
+    /// No page size is chosen here. Apple's per-collection maximums differ and
+    /// only the caller knows which collection it is reading; picking a size
+    /// shapes the request, where following the cursor does not. Callers that
+    /// want 200-row pages pass `("limit", "200")` in `query`, as they already
+    /// do.
+    pub async fn list_all<A>(&self, path: &str, query: &[(&str, &str)]) -> Result<Vec<Resource<A>>>
+    where
+        A: DeserializeOwned,
+    {
+        let mut rows = Vec::new();
+        let mut page = Page::First { path, query };
+
+        loop {
+            let (page_path, page_query) = page.request();
+            let doc: ListDocument<A> = self
+                .request(Method::GET, page_path, page_query, None::<&()>)
+                .await?;
+            rows.extend(doc.data);
+
+            let Some(next) = next_page(doc.links.and_then(|links| links.next)) else {
+                return Ok(rows);
+            };
+            page = next;
+        }
     }
 
     /// Send a request that returns no body on success (typically `DELETE`).
@@ -177,6 +236,17 @@ impl Client {
     }
 }
 
+/// Decide the page that follows one carrying this `links.next`.
+///
+/// Returns `None` when the collection is done. Two ways that happens:
+/// Apple offered no `next` link, or it offered one we cannot turn into a
+/// path. The second case ends the walk instead of failing it — stopping
+/// early shows up as a short list, where a hard failure would take down a
+/// command that was otherwise working. See [`path_and_query`].
+fn next_page(next_link: Option<String>) -> Option<Page<'static>> {
+    Some(Page::Next(path_and_query(&next_link?)?))
+}
+
 fn api_error(status: StatusCode, bytes: &[u8]) -> Error {
     let detail = match serde_json::from_slice::<ErrorDocument>(bytes) {
         Ok(doc) if !doc.errors.is_empty() => doc
@@ -190,5 +260,61 @@ fn api_error(status: StatusCode, bytes: &[u8]) -> Error {
     Error::Api {
         status: status.as_u16(),
         detail,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `links.next` is the whole paging decision, so it is pinned against the
+    // URL shape App Store Connect actually sends rather than a hand-made one.
+    #[test]
+    fn follows_a_next_link_as_a_path() {
+        let link =
+            "https://api.appstoreconnect.apple.com/v1/apps?limit%5Bapps%5D=200&cursor=AQ%3D%3D";
+        assert_eq!(
+            next_page(Some(link.into())),
+            Some(Page::Next(
+                "/v1/apps?limit%5Bapps%5D=200&cursor=AQ%3D%3D".into()
+            ))
+        );
+    }
+
+    /// A collection is done when Apple stops offering a `next` link — which
+    /// is also how it signals a single-page collection.
+    #[test]
+    fn ends_the_walk_on_a_last_page() {
+        assert_eq!(next_page(None), None);
+    }
+
+    /// Stopping early shows up as a short list; failing here would take down
+    /// a command that was otherwise working.
+    #[test]
+    fn ends_the_walk_on_a_link_it_cannot_parse() {
+        assert_eq!(next_page(Some("/v1/apps?cursor=AQ".into())), None);
+        assert_eq!(
+            next_page(Some("https://api.appstoreconnect.apple.com".into())),
+            None
+        );
+    }
+
+    /// The first page is the caller's request, unchanged.
+    #[test]
+    fn first_page_keeps_the_callers_query() {
+        let query = [("limit", "200"), ("filter[bundleId]", "com.x.y")];
+        let page = Page::First {
+            path: "/v1/apps",
+            query: &query,
+        };
+        assert_eq!(page.request(), ("/v1/apps", &query[..]));
+    }
+
+    /// Apple's `next` URL already carries `include`/`filter`/`limit`, so
+    /// re-appending the original query would duplicate every parameter.
+    #[test]
+    fn later_pages_send_only_the_path_apple_named() {
+        let page = Page::Next("/v1/apps?limit=200&cursor=AQ".into());
+        assert_eq!(page.request(), ("/v1/apps?limit=200&cursor=AQ", &[][..]));
     }
 }

@@ -23,7 +23,7 @@
 use async_trait::async_trait;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
-use smbcloud_ascapi_core::jsonapi::{CreateBody, CreateData, Document, ListDocument, Resource};
+use smbcloud_ascapi_core::jsonapi::{CreateBody, CreateData, Document, Resource};
 use smbcloud_ascapi_core::Client;
 use smbcloud_ascapi_core::Result;
 
@@ -180,14 +180,13 @@ impl CertificatesApi for Client {
         if let Some(certificate_type) = filter_type {
             query.push(("filter[certificateType]", certificate_type.as_api_str()));
         }
-        // Apple's default page size is 20, which a team with several
-        // platforms and a few years of history will exceed.
+        // 200 rows per page instead of Apple's default 20; `list_all` follows
+        // `links.next` so several platforms plus years of history never
+        // truncate.
         query.push(("limit", "200"));
 
-        let doc: ListDocument<CertificateAttributes> = self
-            .request(Method::GET, "/v1/certificates", &query, None::<&()>)
-            .await?;
-        Ok(doc.data)
+        self.list_all::<CertificateAttributes>("/v1/certificates", &query)
+            .await
     }
 
     async fn create_certificate(

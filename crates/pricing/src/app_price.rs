@@ -18,6 +18,7 @@
 use async_trait::async_trait;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
+use smbcloud_ascapi_core::jsonapi::{path_and_query, Links};
 use smbcloud_ascapi_core::Client;
 use smbcloud_ascapi_core::Result;
 use std::collections::HashMap;
@@ -209,17 +210,11 @@ fn join(doc: &PricesDocument) -> Vec<TerritoryPrice> {
         .collect()
 }
 
-/// Turn an absolute `links.next` URL into the path+query
-/// [`Client::request`] wants, since that method prefixes its own base
-/// URL. Returns `None` for anything unparseable, which the caller treats
-/// as "no more pages" rather than an error — a missing last page is
-/// better than a panic on a link Apple changed the shape of.
-fn path_and_query(url: &str) -> Option<String> {
-    let after_scheme = url.split_once("://")?.1;
-    let (_host, rest) = after_scheme.split_once('/')?;
-    Some(format!("/{rest}"))
-}
-
+/// The pricing collection body. Not [`ListDocument`](smbcloud_ascapi_core::jsonapi::ListDocument)
+/// because these responses carry an `included` array the join depends on,
+/// and a `PriceResource` here tolerates a missing `attributes` key that
+/// core's stricter `Resource` would reject. `links` and the URL-stripping
+/// helper are shared with core so the two paginators cannot drift.
 #[derive(Debug, Clone, Deserialize)]
 struct PricesDocument {
     data: Vec<PriceResource>,
@@ -227,12 +222,6 @@ struct PricesDocument {
     included: Vec<IncludedResource>,
     #[serde(default)]
     links: Option<Links>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct Links {
-    #[serde(default)]
-    next: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -380,12 +369,22 @@ mod tests {
         assert_eq!(price.end_date.as_deref(), Some("2026-09-14"));
     }
 
+    // `links` now comes from core, so this pins that the shared type still
+    // reads a real App Store Connect body — including the case where only
+    // `self` is present, which means "last page".
     #[test]
-    fn strips_the_host_off_a_next_link() {
-        assert_eq!(
-            path_and_query("https://api.appstoreconnect.apple.com/v1/appPriceSchedules/1/automaticPrices?cursor=AQ").as_deref(),
-            Some("/v1/appPriceSchedules/1/automaticPrices?cursor=AQ")
+    fn a_next_link_is_absent_on_the_last_page() {
+        let doc: PricesDocument = serde_json::from_str(MANUAL_PAGE).unwrap();
+        assert!(doc.links.expect("links present").next.is_none());
+
+        let with_next = MANUAL_PAGE.replace(
+            r#""links": { "self": "https://api.appstoreconnect.apple.com/v1/x" }"#,
+            r#""links": { "next": "https://api.appstoreconnect.apple.com/v1/y?cursor=AQ" }"#,
         );
-        assert_eq!(path_and_query("not-a-url"), None);
+        let doc: PricesDocument = serde_json::from_str(&with_next).unwrap();
+        assert_eq!(
+            path_and_query(&doc.links.unwrap().next.unwrap()).as_deref(),
+            Some("/v1/y?cursor=AQ")
+        );
     }
 }
