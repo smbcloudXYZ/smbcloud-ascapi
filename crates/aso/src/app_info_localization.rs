@@ -2,8 +2,7 @@ use async_trait::async_trait;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use smbcloud_ascapi_core::jsonapi::{
-    CreateBody, CreateData, Document, ListDocument, Resource, ResourceId, ToOne, UpdateBody,
-    UpdateData,
+    CreateBody, CreateData, Document, Resource, ResourceId, ToOne, UpdateBody, UpdateData,
 };
 use smbcloud_ascapi_core::Client;
 use smbcloud_ascapi_core::Result;
@@ -88,9 +87,8 @@ impl AppInfoLocalizationsApi for Client {
         app_info_id: &str,
     ) -> Result<Vec<AppInfoLocalization>> {
         let path = format!("/v1/appInfos/{app_info_id}/appInfoLocalizations");
-        let doc: ListDocument<AppInfoLocalizationAttributes> =
-            self.request(Method::GET, &path, &[], None::<&()>).await?;
-        Ok(doc.data)
+        self.list_all::<AppInfoLocalizationAttributes>(&path, &[])
+            .await
     }
 
     async fn create_app_info_localization(

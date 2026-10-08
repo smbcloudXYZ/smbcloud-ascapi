@@ -11,6 +11,7 @@ use smbcloud_ascapi_aso::app_store_version::{AppStoreVersionCreateAttributes, Pl
 use smbcloud_ascapi_aso::app_store_version_localization::{
     AppStoreVersionLocalizationCreateAttributes, AppStoreVersionLocalizationFields,
 };
+use smbcloud_ascapi_aso::build::BuildFilter;
 use smbcloud_ascapi_aso::bundle_id::{BundleIdCreateAttributes, BundleIdPlatform};
 use smbcloud_ascapi_aso::prelude::*;
 use smbcloud_ascapi_core::{ApiKey, Client};
@@ -388,10 +389,32 @@ enum AppsCommand {
     },
     /// `GET /v1/apps/{id}/appInfos`.
     Infos { app_id: String },
-    /// `GET /v1/apps/{id}/builds` — newest first, so the
+    /// `GET /v1/builds?filter[app]={id}` — newest first, so the
     /// most recently uploaded build (e.g. after a fixplist re-upload) is
     /// first. Check `processingState` (VALID/INVALID/PROCESSING/FAILED).
-    Builds { app_id: String },
+    Builds {
+        app_id: String,
+        /// `filter[version]` — the build (upload) number, e.g. `42`.
+        #[arg(long)]
+        version: Option<String>,
+        /// `filter[preReleaseVersion.version]` — the marketing version the
+        /// build sits under, e.g. `1.1.0`.
+        #[arg(long)]
+        pre_release_version: Option<String>,
+        /// `filter[processingState]` — PROCESSING, FAILED, INVALID, or VALID.
+        #[arg(long)]
+        processing_state: Option<String>,
+    },
+    /// `GET /v1/builds/{id}` — a single build by its App Store Connect id.
+    Build { id: String },
+    /// `GET /v1/preReleaseVersions?filter[app]={id}` — the marketing version strings
+    /// (e.g. `1.1.0`) TestFlight groups builds under.
+    PreReleaseVersions {
+        app_id: String,
+        /// Restrict to one platform.
+        #[arg(long, value_enum)]
+        platform: Option<CliPlatform>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -841,7 +864,24 @@ async fn run_apps(client: &Client, command: AppsCommand, dry_run: bool) -> Resul
             print_json(&client.update_app(&app_id, attributes).await?)
         }
         AppsCommand::Infos { app_id } => print_json(&client.list_app_infos(&app_id).await?),
-        AppsCommand::Builds { app_id } => print_json(&client.list_builds(&app_id).await?),
+        AppsCommand::Builds {
+            app_id,
+            version,
+            pre_release_version,
+            processing_state,
+        } => {
+            let filter = BuildFilter {
+                version,
+                pre_release_version,
+                processing_state,
+            };
+            print_json(&client.list_builds(&app_id, &filter).await?)
+        }
+        AppsCommand::Build { id } => print_json(&client.get_build(&id).await?),
+        AppsCommand::PreReleaseVersions { app_id, platform } => {
+            let platform = platform.map(Platform::from);
+            print_json(&client.list_pre_release_versions(&app_id, platform).await?)
+        }
     }
 }
 

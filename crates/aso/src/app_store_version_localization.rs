@@ -2,8 +2,7 @@ use async_trait::async_trait;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use smbcloud_ascapi_core::jsonapi::{
-    CreateBody, CreateData, Document, ListDocument, Resource, ResourceId, ToOne, UpdateBody,
-    UpdateData,
+    CreateBody, CreateData, Document, Resource, ResourceId, ToOne, UpdateBody, UpdateData,
 };
 use smbcloud_ascapi_core::Client;
 use smbcloud_ascapi_core::Result;
@@ -93,9 +92,8 @@ impl AppStoreVersionLocalizationsApi for Client {
     ) -> Result<Vec<AppStoreVersionLocalization>> {
         let path =
             format!("/v1/appStoreVersions/{app_store_version_id}/appStoreVersionLocalizations");
-        let doc: ListDocument<AppStoreVersionLocalizationAttributes> =
-            self.request(Method::GET, &path, &[], None::<&()>).await?;
-        Ok(doc.data)
+        self.list_all::<AppStoreVersionLocalizationAttributes>(&path, &[])
+            .await
     }
 
     async fn create_app_store_version_localization(

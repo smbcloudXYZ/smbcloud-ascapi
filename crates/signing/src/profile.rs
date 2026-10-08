@@ -34,7 +34,7 @@ use async_trait::async_trait;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use smbcloud_ascapi_core::jsonapi::{
-    CreateBody, CreateData, Document, ListDocument, Resource, ResourceId, ToMany, ToOne,
+    CreateBody, CreateData, Document, Resource, ResourceId, ToMany, ToOne,
 };
 use smbcloud_ascapi_core::Client;
 use smbcloud_ascapi_core::Result;
@@ -303,14 +303,13 @@ impl ProfilesApi for Client {
         if let Some(profile_type) = filter_type {
             query.push(("filter[profileType]", profile_type.as_api_str()));
         }
-        // Apple's default page size is 20, which a team carrying a profile
-        // per app per platform will exceed.
+        // 200 rows per page instead of Apple's default 20; `list_all` follows
+        // `links.next` so a team with one profile per app per platform is
+        // never truncated.
         query.push(("limit", "200"));
 
-        let doc: ListDocument<ProfileAttributes> = self
-            .request(Method::GET, "/v1/profiles", &query, None::<&()>)
-            .await?;
-        Ok(doc.data)
+        self.list_all::<ProfileAttributes>("/v1/profiles", &query)
+            .await
     }
 
     async fn get_profile_content(&self, id: &str) -> Result<Profile> {

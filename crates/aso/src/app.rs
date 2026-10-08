@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
-use smbcloud_ascapi_core::jsonapi::{Document, ListDocument, Resource, UpdateBody, UpdateData};
+use smbcloud_ascapi_core::jsonapi::{Document, Resource, UpdateBody, UpdateData};
 use smbcloud_ascapi_core::Client;
 use smbcloud_ascapi_core::Result;
 
@@ -62,10 +62,7 @@ impl AppsApi for Client {
         if let Some(bundle_id) = filter_bundle_id {
             query.push(("filter[bundleId]", bundle_id));
         }
-        let doc: ListDocument<AppAttributes> = self
-            .request(Method::GET, "/v1/apps", &query, None::<&()>)
-            .await?;
-        Ok(doc.data)
+        self.list_all::<AppAttributes>("/v1/apps", &query).await
     }
 
     async fn get_app(&self, app_id: &str) -> Result<App> {

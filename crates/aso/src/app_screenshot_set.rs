@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use smbcloud_ascapi_core::jsonapi::{
-    CreateBody, CreateData, Document, ListDocument, Resource, ResourceId, ToOne,
+    CreateBody, CreateData, Document, Resource, ResourceId, ToOne,
 };
 use smbcloud_ascapi_core::Client;
 use smbcloud_ascapi_core::Result;
@@ -121,9 +121,8 @@ impl AppScreenshotSetsApi for Client {
         let path = format!(
             "/v1/appStoreVersionLocalizations/{app_store_version_localization_id}/appScreenshotSets"
         );
-        let doc: ListDocument<AppScreenshotSetAttributes> =
-            self.request(Method::GET, &path, &[], None::<&()>).await?;
-        Ok(doc.data)
+        self.list_all::<AppScreenshotSetAttributes>(&path, &[])
+            .await
     }
 
     async fn create_app_screenshot_set(

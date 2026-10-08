@@ -197,7 +197,7 @@ macro_rules! ascapi_mcp_tools {
                 let client = Self::client()?;
                 let request = parameters.0;
                 let value = client
-                    .list_builds(&request.app_id)
+                    .list_builds(&request.app_id, &::smbcloud_ascapi_aso::build::BuildFilter::default())
                     .await
                     .map_err(|error| ::rmcp::model::ErrorData::internal_error(error.to_string(), None))?;
                 Ok(::rmcp::model::CallToolResult::success(vec![
