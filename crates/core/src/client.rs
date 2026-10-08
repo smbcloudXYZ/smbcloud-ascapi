@@ -1,6 +1,6 @@
-use crate::auth::ApiKey;
 use crate::error::{Error, Result};
 use crate::jsonapi::{path_and_query, ErrorDocument, ListDocument, Resource};
+use crate::token::{IntoTokenSource, TokenSource};
 use reqwest::{Method, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -55,16 +55,20 @@ struct CachedToken {
 /// them directly.
 pub struct Client {
     http: reqwest::Client,
-    api_key: ApiKey,
+    token_source: Box<dyn TokenSource>,
     base_url: String,
     token: Mutex<Option<CachedToken>>,
 }
 
 impl Client {
-    pub fn new(api_key: ApiKey) -> Self {
+    /// Build a client over anything that can mint a bearer token. An
+    /// [`ApiKey`](crate::ApiKey) is the usual argument and still works
+    /// unchanged, since it converts into a [`TokenSource`]; a
+    /// [`StaticToken`](crate::StaticToken) or any custom source works too.
+    pub fn new(token_source: impl IntoTokenSource) -> Self {
         Self {
             http: reqwest::Client::new(),
-            api_key,
+            token_source: token_source.into_token_source(),
             base_url: BASE_URL.to_string(),
             token: Mutex::new(None),
         }
@@ -89,13 +93,13 @@ impl Client {
             }
         }
 
-        let value = self.api_key.token()?;
+        let minted = self.token_source.mint()?;
         *guard = Some(CachedToken {
-            value: value.clone(),
+            value: minted.value.clone(),
             minted_at: Instant::now(),
-            lifetime: Duration::from_secs(self.api_key.lifetime_secs()),
+            lifetime: minted.lifetime,
         });
-        Ok(value)
+        Ok(minted.value)
     }
 
     /// Send a request and decode a JSON:API response body into `T`. Use
