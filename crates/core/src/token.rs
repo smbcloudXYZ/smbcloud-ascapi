@@ -157,3 +157,49 @@ impl IntoTokenSource for Box<dyn TokenSource> {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_static_token_mints_its_value_with_apples_twenty_minute_ceiling() {
+        let minted = StaticToken::new("eyJ.static").mint().unwrap();
+        assert_eq!(minted.value, "eyJ.static");
+        assert_eq!(minted.lifetime, Duration::from_secs(20 * 60));
+    }
+
+    #[test]
+    fn a_static_token_lifetime_can_be_overridden() {
+        let minted = StaticToken::new("eyJ.static")
+            .with_lifetime_secs(90)
+            .mint()
+            .unwrap();
+        assert_eq!(minted.lifetime, Duration::from_secs(90));
+    }
+
+    /// Debug output ends up in logs and MCP transcripts, so the token
+    /// value must never appear in it.
+    #[test]
+    fn debug_output_never_contains_the_token() {
+        let token = StaticToken::new("eyJ.secret");
+        let minted = token.mint().unwrap();
+        let boxed: Box<dyn TokenSource> = Box::new(token.clone());
+
+        for rendered in [
+            format!("{token:?}"),
+            format!("{minted:?}"),
+            format!("{boxed:?}"),
+        ] {
+            assert!(!rendered.contains("eyJ.secret"), "leaked: {rendered}");
+        }
+        assert_eq!(boxed.describe(), "static token");
+    }
+
+    #[test]
+    fn a_boxed_source_converts_into_a_token_source() {
+        let boxed: Box<dyn TokenSource> = Box::new(StaticToken::new("eyJ.boxed"));
+        let source = boxed.into_token_source();
+        assert_eq!(source.mint().unwrap().value, "eyJ.boxed");
+    }
+}
