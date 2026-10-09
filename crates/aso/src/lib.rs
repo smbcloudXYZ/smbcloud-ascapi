@@ -29,6 +29,7 @@ pub mod app_store_version;
 pub mod app_store_version_localization;
 pub mod build;
 pub mod bundle_id;
+pub mod review_submission;
 
 /// Every extension trait in this crate, for one glob import.
 pub mod prelude {
@@ -41,4 +42,5 @@ pub mod prelude {
     pub use crate::app_store_version_localization::AppStoreVersionLocalizationsApi;
     pub use crate::build::BuildsApi;
     pub use crate::bundle_id::BundleIdsApi;
+    pub use crate::review_submission::ReviewSubmissionsApi;
 }

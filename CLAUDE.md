@@ -81,3 +81,24 @@ The CLI needs an ASC API key: `--key-id`/`ASC_API_KEY`,
 `--private-key-path`/`ASC_PRIVATE_KEY_PATH` (defaults to
 `~/.appstoreconnect/private_keys/AuthKey_<key-id>.p8`). `--mcp` resolves
 credentials per tool call, so the server can list tools unconfigured.
+
+## Review submissions (CLI)
+
+```sh
+# GET /v1/reviewSubmissions?filter[app]={id}
+asc review-submissions list <APP_ID> [--platform <...>] [--state READY_FOR_REVIEW]
+
+# Reuse the platform's open (READY_FOR_REVIEW) submission or create one, add
+# the version as an item, then PATCH submitted: true. --dry-run reads and
+# prints the plan. Refuses a version that is already WAITING_FOR_REVIEW,
+# IN_REVIEW or live, before any write.
+asc review-submissions submit <APP_ID> --version-id <APP_STORE_VERSION_ID>
+
+# PATCH canceled: true, for a submission App Review hasn't picked up.
+asc review-submissions cancel <SUBMISSION_ID>
+```
+
+The API is `ReviewSubmissionsApi` in `crates/aso/src/review_submission.rs`;
+the plan/submit orchestration is `crates/frontend/src/review.rs`. Submitting is
+CLI-only on purpose: it sends a build to App Review, which an MCP tool call
+shouldn't do on a model's say-so.
