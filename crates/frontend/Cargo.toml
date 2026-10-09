@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Shared operations behind the ascapi command line and MCP surfaces: credential resolution, result shaping, certificate issuance, and altool uploads."
+description = "Shared operations behind the asc command line and MCP surfaces: credential resolution, result shaping, certificate issuance, and altool uploads."
 
 [lib]
 path = "src/lib.rs"

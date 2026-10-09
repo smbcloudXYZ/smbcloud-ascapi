@@ -1,6 +1,6 @@
 //! App Store Connect MCP contract.
 //!
-//! Defines the canonical tool set exposed by `ascapi --mcp`. Each name is
+//! Defines the canonical tool set exposed by `asc --mcp`. Each name is
 //! supplied by the embedder through [`crate::ascapi_mcp_tools`], so the
 //! standalone binary and any host that re-exposes this contract share one
 //! implementation and one public surface. Same arrangement `xcrs` uses in
@@ -20,7 +20,7 @@
 //!
 //! # What is deliberately absent
 //!
-//! Certificate revocation. `ascapi certificates revoke` exists on the
+//! Certificate revocation. `asc certificates revoke` exists on the
 //! command line and is intentionally not a tool: revoking a distribution
 //! certificate invalidates every provisioning profile embedding it, for
 //! every teammate and every CI job, at once and irreversibly. That is not
