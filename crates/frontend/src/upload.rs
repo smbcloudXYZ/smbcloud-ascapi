@@ -37,10 +37,11 @@ pub struct UploadOutcome {
     /// altool's exit status; `None` if it was killed by a signal.
     pub exit_code: Option<i32>,
     /// The delivery UUID altool reports for a successful upload, if its
-    /// output carried one. `altool --build-status --delivery-id` takes it.
+    /// output carried one. It is also the build's App Store Connect id, so
+    /// `ascapi apps build <delivery_id>` reads the build back.
     pub delivery_id: Option<String>,
-    /// altool's `--output-format json` body when it parsed, otherwise its
-    /// stdout as a string.
+    /// altool's `--output-format json` body when it parsed (an array of
+    /// both documents with `--wait`), otherwise its stdout as a string.
     pub output: serde_json::Value,
 }
 
@@ -122,15 +123,28 @@ pub fn upload_package(
 }
 
 fn outcome(package: &Path, exit_code: Option<i32>, stdout: &[u8]) -> UploadOutcome {
-    let output = serde_json::from_slice::<serde_json::Value>(stdout).unwrap_or_else(|_| {
-        serde_json::Value::String(String::from_utf8_lossy(stdout).trim().to_string())
-    });
+    let output = parse_output(stdout);
     UploadOutcome {
         package: package.display().to_string(),
         success: exit_code == Some(0),
         exit_code,
         delivery_id: find_delivery_id(&output),
         output,
+    }
+}
+
+/// With `--wait`, altool writes two JSON documents back to back: the build's
+/// processing status, then the upload result. Read them as a stream and
+/// return an array when there is more than one. Anything that isn't JSON
+/// is kept as text.
+fn parse_output(stdout: &[u8]) -> serde_json::Value {
+    let documents: Result<Vec<serde_json::Value>, _> = serde_json::Deserializer::from_slice(stdout)
+        .into_iter()
+        .collect();
+    match documents {
+        Ok(mut documents) if documents.len() == 1 => documents.remove(0),
+        Ok(documents) if !documents.is_empty() => serde_json::Value::Array(documents),
+        _ => serde_json::Value::String(String::from_utf8_lossy(stdout).trim().to_string()),
     }
 }
 
@@ -207,6 +221,34 @@ mod tests {
         let outcome = outcome(Path::new("/out/Klepon.ipa"), Some(0), body);
         assert!(outcome.success);
         assert_eq!(outcome.delivery_id.as_deref(), Some("d1e2f3"));
+    }
+
+    /// The shape Xcode 27's altool prints with `--wait`, trimmed from a real
+    /// smbcloud-mailx visionOS upload: a status document, then the upload
+    /// document, with no separator between them.
+    #[test]
+    fn reads_both_documents_altool_prints_with_wait() {
+        let body = br#"{
+  "build-status" : "VALID",
+  "bundle-short-version-string" : "1.1.0",
+  "bundle-version" : "1791527508",
+  "delivery-uuid" : "3a12861d-5afd-4fc1-8b2d-96c80e055b1c"
+}
+{
+  "details" : {
+    "delivery-uuid" : "3a12861d-5afd-4fc1-8b2d-96c80e055b1c"
+  },
+  "success-message" : "No errors uploading archive"
+}
+"#;
+        let outcome = outcome(Path::new("/out/MailXVision.ipa"), Some(0), body);
+        assert_eq!(
+            outcome.delivery_id.as_deref(),
+            Some("3a12861d-5afd-4fc1-8b2d-96c80e055b1c")
+        );
+        let documents = outcome.output.as_array().expect("two documents");
+        assert_eq!(documents.len(), 2);
+        assert_eq!(documents[0]["build-status"], "VALID");
     }
 
     #[test]
