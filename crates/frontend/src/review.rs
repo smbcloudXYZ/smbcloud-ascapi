@@ -8,7 +8,7 @@
 use serde::Serialize;
 use smbcloud_ascapi_aso::app_store_version::Platform;
 use smbcloud_ascapi_aso::prelude::*;
-use smbcloud_ascapi_aso::review_submission::STATE_READY_FOR_REVIEW;
+use smbcloud_ascapi_aso::review_submission::OPEN_STATES;
 use smbcloud_ascapi_core::Client;
 
 /// What [`submit_for_review`] will do, worked out from reads only.
@@ -19,9 +19,13 @@ pub struct SubmissionPlan {
     pub version_string: Option<String>,
     pub platform: String,
     pub app_version_state: Option<String>,
-    /// An open (`READY_FOR_REVIEW`) submission for this app and platform to
-    /// reuse. `None` means a new one gets created.
+    /// An open submission for this app and platform to reuse: a draft
+    /// (`READY_FOR_REVIEW`), or one App Review sent back
+    /// (`UNRESOLVED_ISSUES`), which is how a rejected version is
+    /// resubmitted. `None` means a new one gets created.
     pub existing_submission_id: Option<String>,
+    /// That submission's state, when there is one.
+    pub existing_submission_state: Option<String>,
     /// Whether the open submission already carries an item. App Store
     /// Connect allows one item per version, so when this is true the item
     /// step is skipped.
@@ -52,10 +56,13 @@ pub async fn plan_submission(
     let platform = version.attributes.platform;
 
     let open = client
-        .list_review_submissions(app_id, Some(platform), &[STATE_READY_FOR_REVIEW])
+        .list_review_submissions(app_id, Some(platform), &OPEN_STATES)
         .await
         .map_err(|error| error.to_string())?;
     let existing = open.into_iter().next();
+    let existing_submission_state = existing
+        .as_ref()
+        .and_then(|submission| submission.attributes.state.clone());
 
     let existing_submission_has_items = match &existing {
         Some(submission) => !client
@@ -80,6 +87,7 @@ pub async fn plan_submission(
         platform: platform_name(platform).to_string(),
         app_version_state: version.attributes.app_version_state,
         existing_submission_id: existing.map(|submission| submission.id),
+        existing_submission_state,
         existing_submission_has_items,
     })
 }

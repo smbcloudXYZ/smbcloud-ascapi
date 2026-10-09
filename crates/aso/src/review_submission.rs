@@ -26,6 +26,14 @@ pub const ITEM_RESOURCE_TYPE: &str = "reviewSubmissionItems";
 /// `COMPLETING`, or `COMPLETE`.
 pub const STATE_READY_FOR_REVIEW: &str = "READY_FOR_REVIEW";
 
+/// A submission App Review sent back. It stays open, still holding its
+/// items, and resubmitting means submitting this same one again.
+pub const STATE_UNRESOLVED_ISSUES: &str = "UNRESOLVED_ISSUES";
+
+/// States of a submission that is still open for this app and platform,
+/// so a new submission can't be created alongside it.
+pub const OPEN_STATES: [&str; 2] = [STATE_READY_FOR_REVIEW, STATE_UNRESOLVED_ISSUES];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReviewSubmissionAttributes {
@@ -273,6 +281,24 @@ mod tests {
         assert_eq!(
             list_query("6766108771", None, ""),
             vec![("filter[app]", "6766108771"), ("limit", "200")]
+        );
+    }
+
+    /// A rejected version's submission is `UNRESOLVED_ISSUES`, not
+    /// `READY_FOR_REVIEW`, so looking only for drafts misses it and the
+    /// caller tries to create a second submission, which App Store
+    /// Connect refuses.
+    #[test]
+    fn open_states_include_a_submission_app_review_sent_back() {
+        let states = OPEN_STATES.join(",");
+        assert_eq!(
+            list_query("6756177644", Some(Platform::Ios), &states),
+            vec![
+                ("filter[app]", "6756177644"),
+                ("limit", "200"),
+                ("filter[platform]", "IOS"),
+                ("filter[state]", "READY_FOR_REVIEW,UNRESOLVED_ISSUES"),
+            ]
         );
     }
 
