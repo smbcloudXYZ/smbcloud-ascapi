@@ -183,6 +183,10 @@ enum ProfilesCommand {
         /// Only show one type.
         #[arg(long, value_enum)]
         r#type: Option<CliProfileType>,
+        /// Add each profile's bundle ID (`bundle_id`, `bundle_identifier`).
+        /// One extra request per profile.
+        #[arg(long)]
+        with_bundle_id: bool,
     },
     /// Create a profile over a bundle ID and one or more certificates.
     ///
@@ -1506,7 +1510,11 @@ async fn run_profiles(client: &Client, command: ProfilesCommand, dry_run: bool) 
     use smbcloud_ascapi_frontend::time::now_iso8601;
 
     match command {
-        ProfilesCommand::List { name, r#type } => {
+        ProfilesCommand::List {
+            name,
+            r#type,
+            with_bundle_id,
+        } => {
             let mut profiles = client
                 .list_profiles(name.as_deref(), r#type.map(Into::into))
                 .await?;
@@ -1516,10 +1524,17 @@ async fn run_profiles(client: &Client, command: ProfilesCommand, dry_run: bool) 
                     .cmp(&b.attributes.expiration_date)
             });
             let now = now_iso8601();
-            let summaries: Vec<_> = profiles
+            let mut summaries: Vec<_> = profiles
                 .iter()
                 .map(|profile| ProfileSummary::from_resource(profile, &now))
                 .collect();
+            if with_bundle_id {
+                for summary in &mut summaries {
+                    let bundle = client.get_profile_bundle_id(&summary.id).await?;
+                    summary.bundle_identifier = bundle.attributes.identifier;
+                    summary.bundle_id = Some(bundle.id);
+                }
+            }
             print_json(&summaries)
         }
 

@@ -182,6 +182,18 @@ pub struct ProfileCreateAttributes {
     pub profile_type: ProfileType,
 }
 
+/// The bundle ID behind a profile, as `GET /v1/profiles/{id}/bundleId`
+/// returns it. Only the fields a caller needs to match a profile to an
+/// app; the signing crate doesn't depend on the aso crate's full type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileBundleIdAttributes {
+    pub identifier: Option<String>,
+    pub platform: Option<String>,
+}
+
+pub type ProfileBundleId = Resource<ProfileBundleIdAttributes>;
+
 /// The relationships a create request must carry.
 ///
 /// Built explicitly rather than derived from ids alone, because `devices`
@@ -281,6 +293,13 @@ pub trait ProfilesApi {
         relationships: ProfileCreateRelationships,
     ) -> Result<Profile>;
 
+    /// `GET /v1/profiles/{id}/bundleId` — the bundle ID a profile is for.
+    ///
+    /// A list response carries only the relationship link, not the
+    /// identifier, so finding which app an expired profile belongs to
+    /// takes one of these per profile.
+    async fn get_profile_bundle_id(&self, id: &str) -> Result<ProfileBundleId>;
+
     /// `DELETE /v1/profiles/{id}`.
     ///
     /// Narrower than revoking a certificate: it invalidates only this
@@ -342,6 +361,18 @@ impl ProfilesApi for Client {
         };
         let doc: Document<ProfileAttributes> = self
             .request(Method::POST, "/v1/profiles", &[], Some(&body))
+            .await?;
+        Ok(doc.data)
+    }
+
+    async fn get_profile_bundle_id(&self, id: &str) -> Result<ProfileBundleId> {
+        let doc: Document<ProfileBundleIdAttributes> = self
+            .request(
+                Method::GET,
+                &format!("/v1/profiles/{id}/bundleId"),
+                &[],
+                None::<&()>,
+            )
             .await?;
         Ok(doc.data)
     }
@@ -450,5 +481,20 @@ mod tests {
         );
         let json = serde_json::to_value(&relationships).expect("serializes");
         assert!(json.get("devices").is_none());
+    }
+
+    #[test]
+    fn reads_the_bundle_id_behind_a_profile() {
+        let doc: Document<ProfileBundleIdAttributes> = serde_json::from_value(serde_json::json!({
+            "data": { "id": "C3PP53MLM3", "type": "bundleIds",
+                      "attributes": { "identifier": "ai.splitfire.SplitfireAI",
+                                      "platform": "UNIVERSAL", "name": "SplitFire AI", "seedId": "2TQF86ZACD" } }
+        }))
+        .unwrap();
+        assert_eq!(doc.data.id, "C3PP53MLM3");
+        assert_eq!(
+            doc.data.attributes.identifier.as_deref(),
+            Some("ai.splitfire.SplitfireAI")
+        );
     }
 }
