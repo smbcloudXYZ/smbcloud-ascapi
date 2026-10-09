@@ -17,7 +17,9 @@ pub mod auth;
 pub mod client;
 pub mod error;
 pub mod jsonapi;
+pub mod token;
 
 pub use auth::ApiKey;
 pub use client::Client;
 pub use error::{Error, Result};
+pub use token::{IntoTokenSource, MintedToken, StaticToken, TokenSource};

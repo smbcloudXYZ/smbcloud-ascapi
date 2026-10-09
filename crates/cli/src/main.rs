@@ -11,9 +11,11 @@ use smbcloud_ascapi_aso::app_store_version::{AppStoreVersionCreateAttributes, Pl
 use smbcloud_ascapi_aso::app_store_version_localization::{
     AppStoreVersionLocalizationCreateAttributes, AppStoreVersionLocalizationFields,
 };
+use smbcloud_ascapi_aso::build::BuildFilter;
 use smbcloud_ascapi_aso::bundle_id::{BundleIdCreateAttributes, BundleIdPlatform};
 use smbcloud_ascapi_aso::prelude::*;
 use smbcloud_ascapi_core::{ApiKey, Client};
+use smbcloud_ascapi_frontend::upload::{self, upload_package, AltoolAuth};
 use smbcloud_ascapi_pricing::app_price::PriceKind;
 use smbcloud_ascapi_pricing::prelude::*;
 use smbcloud_ascapi_reports::prelude::*;
@@ -388,10 +390,42 @@ enum AppsCommand {
     },
     /// `GET /v1/apps/{id}/appInfos`.
     Infos { app_id: String },
-    /// `GET /v1/apps/{id}/builds` — newest first, so the
+    /// `GET /v1/builds?filter[app]={id}` — newest first, so the
     /// most recently uploaded build (e.g. after a fixplist re-upload) is
     /// first. Check `processingState` (VALID/INVALID/PROCESSING/FAILED).
-    Builds { app_id: String },
+    Builds {
+        app_id: String,
+        /// `filter[version]` — the build (upload) number, e.g. `42`.
+        #[arg(long)]
+        version: Option<String>,
+        /// `filter[preReleaseVersion.version]` — the marketing version the
+        /// build sits under, e.g. `1.1.0`.
+        #[arg(long)]
+        pre_release_version: Option<String>,
+        /// `filter[processingState]` — PROCESSING, FAILED, INVALID, or VALID.
+        #[arg(long)]
+        processing_state: Option<String>,
+    },
+    /// `GET /v1/builds/{id}` — a single build by its App Store Connect id.
+    Build { id: String },
+    /// `GET /v1/preReleaseVersions?filter[app]={id}` — the marketing version strings
+    /// (e.g. `1.1.0`) TestFlight groups builds under.
+    PreReleaseVersions {
+        app_id: String,
+        /// Restrict to one platform.
+        #[arg(long, value_enum)]
+        platform: Option<CliPlatform>,
+    },
+    /// Upload an exported `.ipa`/`.pkg` with `xcrun altool --upload-package`,
+    /// authenticated with the same key and `.p8` as every other command.
+    /// Afterwards, find the build with `apps builds <APP_ID> --version <N>`.
+    Upload {
+        /// The exported package (`xcodebuild -exportArchive` output).
+        package: PathBuf,
+        /// Block until App Store Connect finishes processing the build.
+        #[arg(long)]
+        wait: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -743,6 +777,11 @@ async fn main() -> Result<()> {
         path
     });
 
+    let altool_auth = AltoolAuth {
+        key_id: key_id.clone(),
+        issuer_id: issuer_id.clone(),
+        private_key_path: private_key_path.clone(),
+    };
     let api_key = ApiKey::from_p8_file(&key_id, &issuer_id, &private_key_path)
         .with_context(|| format!("loading App Store Connect API key from {private_key_path:?}"))?;
     let client = Client::new(api_key);
@@ -754,7 +793,7 @@ async fn main() -> Result<()> {
     };
 
     match command {
-        Command::Apps { command } => run_apps(&client, command, cli.dry_run).await,
+        Command::Apps { command } => run_apps(&client, &altool_auth, command, cli.dry_run).await,
         Command::BundleIds { command } => run_bundle_ids(&client, command, cli.dry_run).await,
         Command::AppStoreVersions { command } => {
             run_app_store_versions(&client, command, cli.dry_run).await
@@ -820,7 +859,12 @@ async fn run_sales_reports(client: &Client, command: SalesReportsCommand) -> Res
     }
 }
 
-async fn run_apps(client: &Client, command: AppsCommand, dry_run: bool) -> Result<()> {
+async fn run_apps(
+    client: &Client,
+    altool_auth: &AltoolAuth,
+    command: AppsCommand,
+    dry_run: bool,
+) -> Result<()> {
     match command {
         AppsCommand::List { bundle_id } => {
             let apps = client.list_apps(bundle_id.as_deref()).await?;
@@ -841,7 +885,45 @@ async fn run_apps(client: &Client, command: AppsCommand, dry_run: bool) -> Resul
             print_json(&client.update_app(&app_id, attributes).await?)
         }
         AppsCommand::Infos { app_id } => print_json(&client.list_app_infos(&app_id).await?),
-        AppsCommand::Builds { app_id } => print_json(&client.list_builds(&app_id).await?),
+        AppsCommand::Builds {
+            app_id,
+            version,
+            pre_release_version,
+            processing_state,
+        } => {
+            let filter = BuildFilter {
+                version,
+                pre_release_version,
+                processing_state,
+            };
+            print_json(&client.list_builds(&app_id, &filter).await?)
+        }
+        AppsCommand::Build { id } => print_json(&client.get_build(&id).await?),
+        AppsCommand::PreReleaseVersions { app_id, platform } => {
+            let platform = platform.map(Platform::from);
+            print_json(&client.list_pre_release_versions(&app_id, platform).await?)
+        }
+        AppsCommand::Upload { package, wait } => {
+            if dry_run {
+                let mut argv = vec!["xcrun".to_string()];
+                argv.extend(
+                    upload::altool_args(&package, altool_auth, wait)
+                        .iter()
+                        .map(|arg| arg.to_string_lossy().into_owned()),
+                );
+                return print_json(&serde_json::json!({ "dry_run": true, "command": argv }));
+            }
+            let auth = altool_auth.clone();
+            let outcome =
+                tokio::task::spawn_blocking(move || upload_package(&package, &auth, wait))
+                    .await?
+                    .map_err(anyhow::Error::msg)?;
+            print_json(&outcome)?;
+            if !outcome.success {
+                anyhow::bail!("altool upload failed (exit code {:?})", outcome.exit_code);
+            }
+            Ok(())
+        }
     }
 }
 

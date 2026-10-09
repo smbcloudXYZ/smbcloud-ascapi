@@ -8,10 +8,10 @@ from the other:
 | Crate | What it is |
 | --- | --- |
 | `smbcloud-ascapi-core` | Shared transport: JWT auth, the HTTP client, JSON:API envelopes, error types |
-| `smbcloud-ascapi-aso` | App Metadata: apps, app infos, versions, bundle IDs, localizations, screenshots |
+| `smbcloud-ascapi-aso` | App Metadata: apps, app infos, versions, builds, pre-release versions, bundle IDs, localizations, screenshots |
 | `smbcloud-ascapi-pricing` | Pricing: app price schedules, and the per-territory prices joined with their price points and currencies |
 | `smbcloud-ascapi-signing` | Code signing: certificates and provisioning profiles, plus local RSA key pair and CSR generation |
-| `smbcloud-ascapi-frontend` | Operations both surfaces share, so the CLI and the MCP server agree by construction |
+| `smbcloud-ascapi-frontend` | Operations both surfaces share, so the CLI and the MCP server agree by construction, plus the CLI's `xcrun altool` upload |
 | `smbcloud-ascapi-mcp` | The MCP contract and stdio server |
 | `smbcloud-ascapi-cli` | The `ascapi` binary: clap command tree, plus `--mcp` |
 

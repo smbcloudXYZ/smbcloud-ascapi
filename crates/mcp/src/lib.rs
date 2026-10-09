@@ -184,11 +184,11 @@ macro_rules! ascapi_mcp_tools {
                 name = $build_list_name,
                 title = "List builds",
                 annotations(title = "List builds", read_only_hint = true, idempotent_hint = true),
-                description = "Purpose: list the builds uploaded for an app, so one can be attached to a version. When to use vs siblings: pair with app_store_version_set_build, which needs a build id from here. Behavior: returns each build's id, version string, upload date, and processing state. Prerequisites: ASC_API_KEY, ASC_ISSUER_ID, and a readable .p8 key at ASC_PRIVATE_KEY_PATH or ~/.appstoreconnect/private_keys/AuthKey_<key-id>.p8. Failure modes: missing or unreadable credentials return an invalid-request error naming what is absent; App Store Connect errors are returned verbatim with their status. Limitations: a build that is still processing cannot be attached yet, and this reports that state rather than waiting for it."
+                description = "Purpose: list the builds uploaded for an app, so one can be attached to a version. When to use vs siblings: pair with app_store_version_set_build, which needs a build id from here. Behavior: returns each build's id, version string, upload date, and processing state, newest upload first, optionally narrowed by build number, marketing version, or processing state. Prerequisites: ASC_API_KEY, ASC_ISSUER_ID, and a readable .p8 key at ASC_PRIVATE_KEY_PATH or ~/.appstoreconnect/private_keys/AuthKey_<key-id>.p8. Failure modes: missing or unreadable credentials return an invalid-request error naming what is absent; App Store Connect errors are returned verbatim with their status. Limitations: a build that is still processing cannot be attached yet, and this reports that state rather than waiting for it."
             )]
             async fn build_list(
                 &self,
-                parameters: ::rmcp::handler::server::wrapper::Parameters<$crate::AppIdRequest>,
+                parameters: ::rmcp::handler::server::wrapper::Parameters<$crate::BuildListRequest>,
             ) -> ::std::result::Result<::rmcp::model::CallToolResult, ::rmcp::model::ErrorData> {
                 #[allow(unused_imports)]
                 use ::smbcloud_ascapi_aso::prelude::*;
@@ -196,8 +196,13 @@ macro_rules! ascapi_mcp_tools {
                 use ::smbcloud_ascapi_signing::prelude::*;
                 let client = Self::client()?;
                 let request = parameters.0;
+                let filter = ::smbcloud_ascapi_aso::build::BuildFilter {
+                    version: request.version,
+                    pre_release_version: request.pre_release_version,
+                    processing_state: request.processing_state,
+                };
                 let value = client
-                    .list_builds(&request.app_id)
+                    .list_builds(&request.app_id, &filter)
                     .await
                     .map_err(|error| ::rmcp::model::ErrorData::internal_error(error.to_string(), None))?;
                 Ok(::rmcp::model::CallToolResult::success(vec![

@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use smbcloud_ascapi_core::jsonapi::{
-    CreateBody, CreateData, Document, ListDocument, Resource, ResourceId, ToOne,
-    UpdateRelationshipsBody, UpdateRelationshipsData,
+    CreateBody, CreateData, Document, Resource, ResourceId, ToOne, UpdateRelationshipsBody,
+    UpdateRelationshipsData,
 };
 use smbcloud_ascapi_core::Client;
 use smbcloud_ascapi_core::Result;
@@ -30,7 +30,7 @@ pub enum Platform {
 }
 
 impl Platform {
-    fn as_query_value(self) -> &'static str {
+    pub(crate) fn as_query_value(self) -> &'static str {
         match self {
             Platform::Ios => "IOS",
             Platform::MacOs => "MAC_OS",
@@ -122,10 +122,8 @@ impl AppStoreVersionsApi for Client {
         if let Some(platform) = filter_platform {
             query.push(("filter[platform]", platform.as_query_value()));
         }
-        let doc: ListDocument<AppStoreVersionAttributes> = self
-            .request(Method::GET, &path, &query, None::<&()>)
-            .await?;
-        Ok(doc.data)
+        self.list_all::<AppStoreVersionAttributes>(&path, &query)
+            .await
     }
 
     async fn get_app_store_version(&self, id: &str) -> Result<AppStoreVersion> {
