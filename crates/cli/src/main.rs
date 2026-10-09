@@ -919,8 +919,10 @@ async fn run_apps(
                     .await?
                     .map_err(anyhow::Error::msg)?;
             print_json(&outcome)?;
-            if !outcome.success {
-                anyhow::bail!("altool upload failed (exit code {:?})", outcome.exit_code);
+            match outcome.exit_code {
+                _ if outcome.success => {}
+                Some(code) => anyhow::bail!("altool upload failed with exit code {code}"),
+                None => anyhow::bail!("altool upload was killed by a signal"),
             }
             Ok(())
         }
