@@ -15,6 +15,7 @@ use smbcloud_ascapi_aso::build::BuildFilter;
 use smbcloud_ascapi_aso::bundle_id::{BundleIdCreateAttributes, BundleIdPlatform};
 use smbcloud_ascapi_aso::prelude::*;
 use smbcloud_ascapi_core::{ApiKey, Client};
+use smbcloud_ascapi_frontend::review;
 use smbcloud_ascapi_frontend::upload::{self, upload_package, AltoolAuth};
 use smbcloud_ascapi_pricing::app_price::PriceKind;
 use smbcloud_ascapi_pricing::prelude::*;
@@ -84,6 +85,12 @@ enum Command {
     AppStoreVersions {
         #[command(subcommand)]
         command: AppStoreVersionsCommand,
+    },
+    /// Send an App Store Version to App Review, see what's waiting, or
+    /// withdraw a submission that hasn't been reviewed yet.
+    ReviewSubmissions {
+        #[command(subcommand)]
+        command: ReviewSubmissionsCommand,
     },
     /// Localized name/subtitle for an app's AppInfo.
     AppInfoLocalizations {
@@ -479,6 +486,33 @@ enum AppStoreVersionsCommand {
 }
 
 #[derive(Subcommand)]
+enum ReviewSubmissionsCommand {
+    /// `GET /v1/reviewSubmissions?filter[app]={app_id}`.
+    List {
+        app_id: String,
+        #[arg(long, value_enum)]
+        platform: Option<CliPlatform>,
+        /// Only submissions in this state, e.g. READY_FOR_REVIEW,
+        /// WAITING_FOR_REVIEW, IN_REVIEW, UNRESOLVED_ISSUES, COMPLETE.
+        #[arg(long)]
+        state: Option<String>,
+    },
+    /// Submit an App Store Version for review: reuse the platform's open
+    /// submission or create one, add the version to it, then submit.
+    /// `--dry-run` reads everything and prints the plan without writing.
+    Submit {
+        app_id: String,
+        /// The App Store Version to submit (see `app-store-versions list`).
+        /// It needs a build attached (`app-store-versions set-build`).
+        #[arg(long)]
+        version_id: String,
+    },
+    /// `PATCH /v1/reviewSubmissions/{id}` with `canceled: true` — withdraw
+    /// a submission before App Review picks it up.
+    Cancel { id: String },
+}
+
+#[derive(Subcommand)]
 enum AppInfoLocalizationsCommand {
     List {
         app_info_id: String,
@@ -811,6 +845,9 @@ async fn main() -> Result<()> {
         Command::AppPrices { command } => run_app_prices(&client, command).await,
         Command::Certificates { command } => run_certificates(&client, command, cli.dry_run).await,
         Command::Profiles { command } => run_profiles(&client, command, cli.dry_run).await,
+        Command::ReviewSubmissions { command } => {
+            run_review_submissions(&client, command, cli.dry_run).await
+        }
         Command::SalesReports { command } => run_sales_reports(&client, command).await,
     }
 }
@@ -998,6 +1035,49 @@ async fn run_app_store_versions(
                 return Ok(());
             }
             print_json(&client.set_app_store_version_build(&id, &build_id).await?)
+        }
+    }
+}
+
+async fn run_review_submissions(
+    client: &Client,
+    command: ReviewSubmissionsCommand,
+    dry_run: bool,
+) -> Result<()> {
+    match command {
+        ReviewSubmissionsCommand::List {
+            app_id,
+            platform,
+            state,
+        } => {
+            let states: Vec<&str> = state.as_deref().into_iter().collect();
+            let submissions = client
+                .list_review_submissions(&app_id, platform.map(Into::into), &states)
+                .await?;
+            print_json(&submissions)
+        }
+        ReviewSubmissionsCommand::Submit { app_id, version_id } => {
+            let plan = review::plan_submission(client, &app_id, &version_id)
+                .await
+                .map_err(anyhow::Error::msg)?;
+            if dry_run {
+                match &plan.blocked {
+                    Some(reason) => println!("# dry run — would not submit: {reason}"),
+                    None => println!("# dry run — would submit this plan for review:"),
+                }
+                return print_json(&plan);
+            }
+            let submitted = review::submit_for_review(client, plan)
+                .await
+                .map_err(anyhow::Error::msg)?;
+            print_json(&submitted)
+        }
+        ReviewSubmissionsCommand::Cancel { id } => {
+            if dry_run {
+                println!("# dry run — would PATCH /v1/reviewSubmissions/{id} canceled: true");
+                return Ok(());
+            }
+            print_json(&client.cancel_review_submission(&id).await?)
         }
     }
 }
