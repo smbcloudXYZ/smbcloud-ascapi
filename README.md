@@ -13,7 +13,7 @@ from the other:
 | `smbcloud-ascapi-signing` | Code signing: certificates and provisioning profiles, plus local RSA key pair and CSR generation |
 | `smbcloud-ascapi-frontend` | Operations both surfaces share, so the CLI and the MCP server agree by construction, plus the CLI's `xcrun altool` upload |
 | `smbcloud-ascapi-mcp` | The MCP contract and stdio server |
-| `smbcloud-ascapi-cli` | The `ascapi` binary: clap command tree, plus `--mcp` |
+| `smbcloud-ascapi-cli` | The `asc` binary: clap command tree, plus `--mcp` |
 
 `aso`, `pricing` and `signing` know nothing about each other, and neither knows
 anything about the front ends. Each adds its calls to

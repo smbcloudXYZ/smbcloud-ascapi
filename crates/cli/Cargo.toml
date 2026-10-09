@@ -9,7 +9,7 @@ description = "CLI and MCP server for App Store Connect: issue Apple signing cer
 readme = "README.md"
 
 [[bin]]
-name = "ascapi"
+name = "asc"
 path = "src/main.rs"
 
 [dependencies]

@@ -7,8 +7,8 @@ Guidance for Claude Code (and other agents) working in this repository.
 `smbcloud-ascapi` is a Rust workspace wrapping the App Store Connect API. It
 ships two front ends over one shared core:
 
-- the `ascapi` CLI (`crates/cli`), and
-- an MCP stdio server (`crates/mcp`, reachable via `ascapi --mcp`).
+- the `asc` CLI (`crates/cli`), and
+- an MCP stdio server (`crates/mcp`, reachable via `asc --mcp`).
 
 Both go through `smbcloud-ascapi-frontend` so they can't drift. See `README.md`
 for the full crate table.
@@ -40,21 +40,21 @@ All are subcommands of `apps` (clap kebab-cases the command names):
 ```sh
 # GET /v1/builds?filter[app]={id} — newest first. Check processingState
 # (VALID / INVALID / PROCESSING / FAILED).
-ascapi apps builds <APP_ID> \
+asc apps builds <APP_ID> \
   [--version <BUILD_NUMBER>] \            # filter[version], e.g. 42
   [--pre-release-version <MARKETING>] \   # filter[preReleaseVersion.version], e.g. 1.1.0
   [--processing-state <STATE>]            # filter[processingState]
 
 # GET /v1/builds/{id} — a single build by its ASC id.
-ascapi apps build <BUILD_ID>
+asc apps build <BUILD_ID>
 
 # GET /v1/preReleaseVersions?filter[app]={id} — the marketing version strings
 # TestFlight groups builds under.
-ascapi apps pre-release-versions <APP_ID> [--platform <ios|mac-os|tv-os|vision-os>]
+asc apps pre-release-versions <APP_ID> [--platform <ios|mac-os|tv-os|vision-os>]
 
 # xcrun altool --upload-package, authenticated with the same key id, issuer
 # and .p8 (--p8-file-path) as every other command. --dry-run prints the argv.
-ascapi apps upload <PATH.ipa|PATH.pkg> [--wait]
+asc apps upload <PATH.ipa|PATH.pkg> [--wait]
 ```
 
 The underlying API lives in `crates/aso/src/build.rs`: `BuildsApi` (in the

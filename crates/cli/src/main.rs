@@ -32,7 +32,7 @@ use std::path::PathBuf;
 /// Add/update App Store Connect app metadata (apps, app infos, app store
 /// versions, and their localizations) from the terminal or a script.
 #[derive(Parser)]
-#[command(name = "ascapi", version, about)]
+#[command(name = "asc", version, about)]
 struct Cli {
     /// App Store Connect API key ID (Users and Access → Integrations → App
     /// Store Connect API). Not required with `--mcp`, which resolves
@@ -787,9 +787,7 @@ async fn main() -> Result<()> {
     let client = Client::new(api_key);
 
     let Some(command) = cli.command else {
-        anyhow::bail!(
-            "no subcommand given; run `ascapi --help`, or `ascapi --mcp` for the MCP server"
-        )
+        anyhow::bail!("no subcommand given; run `asc --help`, or `asc --mcp` for the MCP server")
     };
 
     match command {

@@ -1,4 +1,4 @@
-//! Operations shared by the `ascapi` command line and its MCP server.
+//! Operations shared by the `asc` command line and its MCP server.
 //!
 //! Both surfaces need the same things: resolve credentials, call the App
 //! Store Connect client, and shape the result into something worth showing

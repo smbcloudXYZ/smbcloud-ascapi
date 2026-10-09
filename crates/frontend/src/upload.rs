@@ -38,7 +38,7 @@ pub struct UploadOutcome {
     pub exit_code: Option<i32>,
     /// The delivery UUID altool reports for a successful upload, if its
     /// output carried one. It is also the build's App Store Connect id, so
-    /// `ascapi apps build <delivery_id>` reads the build back.
+    /// `asc apps build <delivery_id>` reads the build back.
     pub delivery_id: Option<String>,
     /// altool's `--output-format json` body when it parsed (an array of
     /// both documents with `--wait`), otherwise its stdout as a string.
