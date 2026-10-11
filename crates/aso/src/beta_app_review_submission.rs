@@ -14,9 +14,7 @@
 use async_trait::async_trait;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
-use smbcloud_ascapi_core::jsonapi::{
-    CreateBody, CreateData, Document, ListDocument, Resource, ResourceId, ToOne,
-};
+use smbcloud_ascapi_core::jsonapi::{Document, ListDocument, Resource, ResourceId, ToOne};
 use smbcloud_ascapi_core::Client;
 use smbcloud_ascapi_core::Result;
 
@@ -50,6 +48,23 @@ pub struct BetaAppReviewSubmissionAttributes {
 pub type BetaAppReviewSubmission = Resource<BetaAppReviewSubmissionAttributes>;
 
 // ── internal create helper ────────────────────────────────────────────────────
+
+/// A beta app review submission carries only a `build` relationship. Apple's
+/// endpoint rejects a request whose `data.attributes` is present but null
+/// (422 `ENTITY_UNPROCESSABLE`), so this body omits the field entirely rather
+/// than reusing [`smbcloud_ascapi_core::jsonapi::CreateBody`] with `()`
+/// attributes.
+#[derive(Debug, Clone, Serialize)]
+struct CreateBody {
+    data: CreateData,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct CreateData {
+    #[serde(rename = "type")]
+    resource_type: &'static str,
+    relationships: CreateRelationships,
+}
 
 #[derive(Debug, Clone, Serialize)]
 struct CreateRelationships {
@@ -99,15 +114,14 @@ impl BetaAppReviewSubmissionsApi for Client {
         let body = CreateBody {
             data: CreateData {
                 resource_type: RESOURCE_TYPE,
-                attributes: (),
-                relationships: Some(CreateRelationships {
+                relationships: CreateRelationships {
                     build: ToOne {
                         data: ResourceId {
                             resource_type: crate::build::RESOURCE_TYPE,
                             id: build_id.to_string(),
                         },
                     },
-                }),
+                },
             },
         };
         let doc: Document<BetaAppReviewSubmissionAttributes> = self
@@ -196,17 +210,31 @@ mod tests {
     }
 
     #[test]
-    fn create_body_attributes_unit_serializes() {
-        // The create body has no attributes — verify `()` round-trips cleanly.
+    fn create_body_omits_attributes() {
+        // Apple's endpoint 422s on a null `data.attributes`; the body must omit
+        // the field entirely and carry only the `build` relationship.
         let body = CreateBody {
             data: CreateData {
                 resource_type: RESOURCE_TYPE,
-                attributes: (),
-                relationships: None::<()>,
+                relationships: CreateRelationships {
+                    build: ToOne {
+                        data: ResourceId {
+                            resource_type: crate::build::RESOURCE_TYPE,
+                            id: "BUILD_ID".to_string(),
+                        },
+                    },
+                },
             },
         };
         let v = serde_json::to_value(&body).unwrap();
-        // `()` serialises as `null`; the key is present in the object.
-        assert!(v["data"]["attributes"].is_null());
+        assert!(
+            v["data"].get("attributes").is_none(),
+            "attributes must be omitted, not null: {v}"
+        );
+        assert_eq!(v["data"]["type"], RESOURCE_TYPE);
+        assert_eq!(
+            v["data"]["relationships"]["build"]["data"]["id"],
+            "BUILD_ID"
+        );
     }
 }
