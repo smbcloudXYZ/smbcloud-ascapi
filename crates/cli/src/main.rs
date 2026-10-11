@@ -138,6 +138,26 @@ enum Command {
         #[command(subcommand)]
         command: SalesReportsCommand,
     },
+    /// Local signing health checks that compare this machine against App
+    /// Store Connect. macOS only — they read the login keychain.
+    #[cfg(target_os = "macos")]
+    Signing {
+        #[command(subcommand)]
+        command: SigningCommand,
+    },
+}
+
+/// macOS-only signing diagnostics.
+#[cfg(target_os = "macos")]
+#[derive(Subcommand)]
+enum SigningCommand {
+    /// Cross-check the login keychain against Apple's certificates and
+    /// report which of Apple's certificates this machine can actually sign
+    /// with — i.e. which ones have their private key present locally.
+    ///
+    /// Read-only: it lists certificates and inspects the keychain, and
+    /// never writes or transmits key material.
+    Doctor,
 }
 
 #[derive(Subcommand)]
@@ -860,6 +880,22 @@ async fn main() -> Result<()> {
             run_review_submissions(&client, command, cli.dry_run).await
         }
         Command::SalesReports { command } => run_sales_reports(&client, command).await,
+        #[cfg(target_os = "macos")]
+        Command::Signing { command } => run_signing(&client, command).await,
+    }
+}
+
+/// macOS-only signing diagnostics. Kept out of MCP: a tool call doesn't
+/// need to inspect the operator's login keychain.
+#[cfg(target_os = "macos")]
+async fn run_signing(client: &Client, command: SigningCommand) -> Result<()> {
+    match command {
+        SigningCommand::Doctor => {
+            let report = smbcloud_ascapi_frontend::run_doctor(client)
+                .await
+                .map_err(|error| anyhow::anyhow!(error))?;
+            print_json(&report)
+        }
     }
 }
 
