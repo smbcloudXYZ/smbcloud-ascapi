@@ -16,7 +16,7 @@ use smbcloud_ascapi_aso::bundle_id::{BundleIdCreateAttributes, BundleIdPlatform}
 use smbcloud_ascapi_aso::prelude::*;
 use smbcloud_ascapi_core::{ApiKey, Client};
 use smbcloud_ascapi_frontend::review;
-use smbcloud_ascapi_frontend::upload::{self, upload_package, AltoolAuth};
+use smbcloud_ascapi_frontend::upload::{self, upload_package, validate_app, AltoolAuth, AltoolOp};
 use smbcloud_ascapi_pricing::app_price::PriceKind;
 use smbcloud_ascapi_pricing::prelude::*;
 use smbcloud_ascapi_reports::prelude::*;
@@ -426,6 +426,13 @@ enum AppsCommand {
         /// Restrict to one platform.
         #[arg(long, value_enum)]
         platform: Option<CliPlatform>,
+    },
+    /// Pre-flight an exported `.ipa`/`.pkg` with `xcrun altool --validate-app`:
+    /// run App Store Connect's checks without delivering the binary. Catches
+    /// most of what a failed upload would, in seconds. Run this before `upload`.
+    Validate {
+        /// The exported package (`xcodebuild -exportArchive` output).
+        package: PathBuf,
     },
     /// Upload an exported `.ipa`/`.pkg` with `xcrun altool --upload-package`,
     /// authenticated with the same key and `.p8` as every other command.
@@ -942,11 +949,33 @@ async fn run_apps(
             let platform = platform.map(Platform::from);
             print_json(&client.list_pre_release_versions(&app_id, platform).await?)
         }
+        AppsCommand::Validate { package } => {
+            if dry_run {
+                let mut argv = vec!["xcrun".to_string()];
+                argv.extend(
+                    upload::altool_args(&package, altool_auth, AltoolOp::Validate, false)
+                        .iter()
+                        .map(|arg| arg.to_string_lossy().into_owned()),
+                );
+                return print_json(&serde_json::json!({ "dry_run": true, "command": argv }));
+            }
+            let auth = altool_auth.clone();
+            let outcome = tokio::task::spawn_blocking(move || validate_app(&package, &auth))
+                .await?
+                .map_err(anyhow::Error::msg)?;
+            print_json(&outcome)?;
+            match outcome.exit_code {
+                _ if outcome.success => {}
+                Some(code) => anyhow::bail!("altool validation failed with exit code {code}"),
+                None => anyhow::bail!("altool validation was killed by a signal"),
+            }
+            Ok(())
+        }
         AppsCommand::Upload { package, wait } => {
             if dry_run {
                 let mut argv = vec!["xcrun".to_string()];
                 argv.extend(
-                    upload::altool_args(&package, altool_auth, wait)
+                    upload::altool_args(&package, altool_auth, AltoolOp::Upload, wait)
                         .iter()
                         .map(|arg| arg.to_string_lossy().into_owned()),
                 );
