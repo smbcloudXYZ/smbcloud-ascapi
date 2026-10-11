@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Sales report downloads through the App Store Connect API."
+readme = "README.md"
 
 [lib]
 path = "src/lib.rs"

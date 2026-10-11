@@ -2,7 +2,7 @@
 
 `smbcloud-ascapi` is the app stores coolest API.
 
-Seven crates, split by domain and layered so neither front end can drift
+Eight crates, split by domain and layered so neither front end can drift
 from the other:
 
 | Crate | What it is |
@@ -11,11 +11,12 @@ from the other:
 | `smbcloud-ascapi-aso` | App Metadata: apps, app infos, versions, builds, pre-release versions, review submissions, bundle IDs, localizations, screenshots |
 | `smbcloud-ascapi-pricing` | Pricing: app price schedules, and the per-territory prices joined with their price points and currencies |
 | `smbcloud-ascapi-signing` | Code signing: certificates and provisioning profiles, plus local RSA key pair and CSR generation |
+| `smbcloud-ascapi-reports` | Sales reports: account-level sales data, as Apple's gzip-compressed TSV |
 | `smbcloud-ascapi-frontend` | Operations both surfaces share, so the CLI and the MCP server agree by construction, plus the CLI's `xcrun altool` upload |
 | `smbcloud-ascapi-mcp` | The MCP contract and stdio server |
 | `smbcloud-ascapi-cli` | The `asc` binary: clap command tree, plus `--mcp` |
 
-`aso`, `pricing` and `signing` know nothing about each other, and neither knows
+`aso`, `pricing`, `signing` and `reports` know nothing about each other, and neither knows
 anything about the front ends. Each adds its calls to
 `smbcloud_ascapi_core::Client` as **extension traits**, since Rust only
 allows inherent impls in the crate that defines a type:
@@ -29,4 +30,4 @@ MCP Registry name: `mcp-name: io.github.smbcloudXYZ/ascapi`
 
 ## Copyright
 
-© 2026 [Splitfire AB](https://5mb.app) ([smbCloud](https://smbcloud.xyz)).
+© 2026 PT Sigit Mitra Bangun ([smbCloud](https://smbcloud.xyz)).
