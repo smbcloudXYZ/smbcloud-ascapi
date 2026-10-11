@@ -7,6 +7,12 @@ on:
         description: "Release tag (e.g. v0.2.0)"
         required: true
 
+# One release per tag at a time, and never cancelled: a half-built release
+# has to finish or fail on its own. A second dispatch for the same tag waits.
+concurrency:
+  group: release-github-${{ github.event.inputs.tag || github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
 

@@ -6,6 +6,12 @@ name: Tests
 # many).
 on: push
 
+# A newer push to the same ref supersedes the run in flight, so a burst of
+# pushes to a branch doesn't queue a full ubuntu + macOS matrix for each one.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
