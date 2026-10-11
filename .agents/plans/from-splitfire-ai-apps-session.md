@@ -52,6 +52,7 @@ Notes:
 
 ## 4. Process note
 
-PR #29 was committed directly on `development`, which violates the standing rule
-(never commit directly to `development` in smbcloud-ascapi — branch + PR).
-Decide: rewrite onto a feature branch, or leave.
+Plan files and any other changes land on a feature branch and go in through a
+PR — never a direct commit to `development` (or `main`). It's easy to slip when
+a change feels like "just docs"; treat the branching rule as unconditional.
+See the **Git branching workflow** section of `AGENTS.md`.
