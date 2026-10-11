@@ -66,7 +66,9 @@ macro_rules! ascapi_mcp_tools {
         $app_screenshot_upload_name:literal,
         $app_screenshot_delete_name:literal,
         $certificate_list_name:literal,
-        $certificate_create_name:literal
+        $certificate_create_name:literal,
+        $beta_group_list_name:literal,
+        $beta_app_review_detail_get_name:literal
     ) => {
         #[::rmcp::tool_router(router = ascapi_tool_router, vis = "pub(crate)")]
         impl $server {
@@ -879,6 +881,52 @@ macro_rules! ascapi_mcp_tools {
                 .map_err(|error| ::rmcp::model::ErrorData::internal_error(error, None))?;
                 Ok(::rmcp::model::CallToolResult::success(vec![
                     ::rmcp::model::ContentBlock::json(&outcome)?,
+                ]))
+            }
+
+            #[::rmcp::tool(
+                name = $beta_group_list_name,
+                title = "List beta groups",
+                annotations(title = "List beta groups", read_only_hint = true, idempotent_hint = true),
+                description = "Purpose: list every TestFlight beta group (internal and external) for an app, so an agent knows which group ids are available before adding builds or testers. When to use vs siblings: call this first to discover group ids; use beta_app_review_detail_get to retrieve the contact info Apple's beta review team will see. Behavior: returns each group's id, name, whether it is an internal group, whether it requires a public link, the public link URL (when enabled), and tester counts where available. Prerequisites: ASC_API_KEY, ASC_ISSUER_ID, and a readable .p8 key at ASC_PRIVATE_KEY_PATH or ~/.appstoreconnect/private_keys/AuthKey_<key-id>.p8. Failure modes: missing or unreadable credentials return an invalid-request error naming what is absent; App Store Connect errors are returned verbatim with their status. Limitations: tester emails are not included; use the App Store Connect portal or the CLI to enumerate individual testers."
+            )]
+            async fn beta_group_list(
+                &self,
+                parameters: ::rmcp::handler::server::wrapper::Parameters<$crate::BetaGroupListRequest>,
+            ) -> ::std::result::Result<::rmcp::model::CallToolResult, ::rmcp::model::ErrorData> {
+                #[allow(unused_imports)]
+                use ::smbcloud_ascapi_aso::prelude::*;
+                let client = Self::client()?;
+                let request = parameters.0;
+                let groups = client
+                    .list_beta_groups(&request.app_id)
+                    .await
+                    .map_err(|error| ::rmcp::model::ErrorData::internal_error(error.to_string(), None))?;
+                Ok(::rmcp::model::CallToolResult::success(vec![
+                    ::rmcp::model::ContentBlock::json(&groups)?,
+                ]))
+            }
+
+            #[::rmcp::tool(
+                name = $beta_app_review_detail_get_name,
+                title = "Get beta app review contact detail",
+                annotations(title = "Get beta app review contact detail", read_only_hint = true, idempotent_hint = true),
+                description = "Purpose: retrieve the contact information Apple's TestFlight review team will use when evaluating a beta submission, such as the first name, last name, phone number, email, and any demo account credentials. When to use vs siblings: call this to verify or surface the review contact before submitting a build for beta review; use beta_group_list to discover available groups. Behavior: returns the beta app review detail resource for the given app id. Prerequisites: ASC_API_KEY, ASC_ISSUER_ID, and a readable .p8 key at ASC_PRIVATE_KEY_PATH or ~/.appstoreconnect/private_keys/AuthKey_<key-id>.p8. Failure modes: missing or unreadable credentials return an invalid-request error naming what is absent; App Store Connect errors are returned verbatim with their status. Limitations: updating the contact detail is a CLI-only operation."
+            )]
+            async fn beta_app_review_detail_get(
+                &self,
+                parameters: ::rmcp::handler::server::wrapper::Parameters<$crate::BetaAppReviewDetailGetRequest>,
+            ) -> ::std::result::Result<::rmcp::model::CallToolResult, ::rmcp::model::ErrorData> {
+                #[allow(unused_imports)]
+                use ::smbcloud_ascapi_aso::prelude::*;
+                let client = Self::client()?;
+                let request = parameters.0;
+                let detail = client
+                    .get_beta_app_review_detail(&request.app_id)
+                    .await
+                    .map_err(|error| ::rmcp::model::ErrorData::internal_error(error.to_string(), None))?;
+                Ok(::rmcp::model::CallToolResult::success(vec![
+                    ::rmcp::model::ContentBlock::json(&detail)?,
                 ]))
             }
         }

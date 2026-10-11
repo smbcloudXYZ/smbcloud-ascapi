@@ -11,6 +11,7 @@ use smbcloud_ascapi_aso::app_store_version::{AppStoreVersionCreateAttributes, Pl
 use smbcloud_ascapi_aso::app_store_version_localization::{
     AppStoreVersionLocalizationCreateAttributes, AppStoreVersionLocalizationFields,
 };
+use smbcloud_ascapi_aso::beta_app_review_detail::BetaAppReviewDetailUpdate;
 use smbcloud_ascapi_aso::build::BuildFilter;
 use smbcloud_ascapi_aso::bundle_id::{BundleIdCreateAttributes, BundleIdPlatform};
 use smbcloud_ascapi_aso::prelude::*;
@@ -137,6 +138,116 @@ enum Command {
     SalesReports {
         #[command(subcommand)]
         command: SalesReportsCommand,
+    },
+    /// Manage TestFlight beta testing: groups, review details, and review submissions.
+    Testflight {
+        #[command(subcommand)]
+        command: TestflightCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum TestflightCommand {
+    /// Manage TestFlight beta groups.
+    Groups {
+        #[command(subcommand)]
+        command: BetaGroupsCommand,
+    },
+    /// Manage the Beta App Review contact details for an app.
+    AppReviewDetail {
+        #[command(subcommand)]
+        command: BetaAppReviewDetailCommand,
+    },
+    /// Manage Beta App Review submissions for a build.
+    AppReviewSubmissions {
+        #[command(subcommand)]
+        command: BetaAppReviewSubmissionsCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum BetaGroupsCommand {
+    /// List all beta groups for an app.
+    List {
+        /// The ASC app ID to list groups for.
+        app_id: String,
+    },
+    /// Fetch a single beta group by its ASC ID.
+    Get {
+        /// The ASC beta group ID.
+        group_id: String,
+    },
+    /// Add one or more builds to a beta group.
+    ///
+    /// Adding a build to an external group may trigger Beta App Review if the
+    /// app has not received approval for that group yet. This command is
+    /// CLI-only for that reason.
+    AddBuild {
+        /// The ASC beta group ID.
+        group_id: String,
+        /// One or more ASC build IDs to add to the group.
+        #[arg(long = "build-id", required = true, num_args = 1..)]
+        build_ids: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum BetaAppReviewDetailCommand {
+    /// Fetch the Beta App Review contact details for an app.
+    Get {
+        /// The ASC app ID.
+        app_id: String,
+    },
+    /// Update the Beta App Review contact and demo-account details for an app.
+    ///
+    /// Only supplied flags are updated; omitted fields are left unchanged.
+    Update {
+        /// The ASC app ID.
+        app_id: String,
+        /// Contact email address for Beta App Review questions.
+        #[arg(long)]
+        contact_email: Option<String>,
+        /// Contact first name.
+        #[arg(long)]
+        contact_first_name: Option<String>,
+        /// Contact last name.
+        #[arg(long)]
+        contact_last_name: Option<String>,
+        /// Contact phone number (international format recommended).
+        #[arg(long)]
+        contact_phone: Option<String>,
+        /// Demo account username (if the app requires login to review).
+        #[arg(long)]
+        demo_account_name: Option<String>,
+        /// Demo account password.
+        #[arg(long)]
+        demo_account_password: Option<String>,
+        /// Whether a demo account is required to review the app.
+        #[arg(long)]
+        demo_account_required: Option<bool>,
+        /// Free-form notes for the reviewer (max 4000 chars).
+        #[arg(long)]
+        notes: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum BetaAppReviewSubmissionsCommand {
+    /// List Beta App Review submissions for a build.
+    List {
+        /// The ASC build ID whose submission record to retrieve.
+        #[arg(long)]
+        build_id: String,
+    },
+    /// Submit a build to Beta App Review.
+    ///
+    /// This is irreversible — it immediately sends the build to Apple's
+    /// review queue. Use `--dry-run` to confirm which build would be submitted
+    /// before committing.
+    Submit {
+        /// The ASC build ID to submit for review.
+        #[arg(long)]
+        build_id: String,
     },
 }
 
@@ -860,6 +971,7 @@ async fn main() -> Result<()> {
             run_review_submissions(&client, command, cli.dry_run).await
         }
         Command::SalesReports { command } => run_sales_reports(&client, command).await,
+        Command::Testflight { command } => run_testflight(&client, command, cli.dry_run).await,
     }
 }
 
@@ -902,6 +1014,89 @@ async fn run_sales_reports(client: &Client, command: SalesReportsCommand) -> Res
             }
             Ok(())
         }
+    }
+}
+
+async fn run_testflight(client: &Client, command: TestflightCommand, dry_run: bool) -> Result<()> {
+    match command {
+        TestflightCommand::Groups { command } => match command {
+            BetaGroupsCommand::List { app_id } => {
+                let groups = client.list_beta_groups(&app_id).await?;
+                print_json(&groups)
+            }
+            BetaGroupsCommand::Get { group_id } => {
+                let group = client.get_beta_group(&group_id).await?;
+                print_json(&group)
+            }
+            BetaGroupsCommand::AddBuild {
+                group_id,
+                build_ids,
+            } => {
+                if dry_run {
+                    println!(
+                        "[dry-run] would add {} build(s) to beta group {group_id}: {}",
+                        build_ids.len(),
+                        build_ids.join(", ")
+                    );
+                    return Ok(());
+                }
+                let ids: Vec<&str> = build_ids.iter().map(String::as_str).collect();
+                client.add_builds_to_beta_group(&group_id, &ids).await?;
+                println!("Added {} build(s) to group {group_id}.", build_ids.len());
+                Ok(())
+            }
+        },
+        TestflightCommand::AppReviewDetail { command } => match command {
+            BetaAppReviewDetailCommand::Get { app_id } => {
+                let detail = client.get_beta_app_review_detail(&app_id).await?;
+                print_json(&detail)
+            }
+            BetaAppReviewDetailCommand::Update {
+                app_id,
+                contact_email,
+                contact_first_name,
+                contact_last_name,
+                contact_phone,
+                demo_account_name,
+                demo_account_password,
+                demo_account_required,
+                notes,
+            } => {
+                let update = BetaAppReviewDetailUpdate {
+                    contact_email,
+                    contact_first_name,
+                    contact_last_name,
+                    contact_phone,
+                    demo_account_name,
+                    demo_account_password,
+                    demo_account_required,
+                    notes,
+                };
+                if dry_run {
+                    println!("[dry-run] would update Beta App Review detail for app {app_id}:");
+                    print_json(&update)?;
+                    return Ok(());
+                }
+                let detail = client
+                    .update_beta_app_review_detail(&app_id, update)
+                    .await?;
+                print_json(&detail)
+            }
+        },
+        TestflightCommand::AppReviewSubmissions { command } => match command {
+            BetaAppReviewSubmissionsCommand::List { build_id } => {
+                let submissions = client.list_beta_app_review_submissions(&build_id).await?;
+                print_json(&submissions)
+            }
+            BetaAppReviewSubmissionsCommand::Submit { build_id } => {
+                if dry_run {
+                    println!("[dry-run] would submit build {build_id} to Beta App Review.");
+                    return Ok(());
+                }
+                let submission = client.submit_build_for_beta_review(&build_id).await?;
+                print_json(&submission)
+            }
+        },
     }
 }
 

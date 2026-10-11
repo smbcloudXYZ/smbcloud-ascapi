@@ -262,3 +262,16 @@ pub struct CertificateCreateRequest {
     #[serde(default)]
     pub common_name: Option<String>,
 }
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct BetaGroupListRequest {
+    /// App Store Connect app id whose beta groups to list.
+    pub app_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct BetaAppReviewDetailGetRequest {
+    /// App Store Connect app id whose beta app review contact detail to
+    /// retrieve.
+    pub app_id: String,
+}
