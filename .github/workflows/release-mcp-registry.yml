@@ -7,6 +7,12 @@ on:
         description: "Release tag (e.g. v0.1.0)"
         required: true
 
+# One registry publish per tag at a time, and never cancelled: cancelling
+# `mcp-publisher` mid-publish could leave the listing half-updated.
+concurrency:
+  group: release-mcp-registry-${{ github.event.inputs.tag || github.ref }}
+  cancel-in-progress: false
+
 # OIDC is how we authenticate to the MCP Registry: the registry trusts a GitHub
 # Actions token issued for this repository, so no long-lived secret is needed.
 permissions:
