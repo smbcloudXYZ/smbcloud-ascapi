@@ -16,6 +16,7 @@ use smbcloud_ascapi_aso::build::BuildFilter;
 use smbcloud_ascapi_aso::bundle_id::{BundleIdCreateAttributes, BundleIdPlatform};
 use smbcloud_ascapi_aso::prelude::*;
 use smbcloud_ascapi_core::{ApiKey, Client};
+use smbcloud_ascapi_frontend::await_processing::{await_processing, AwaitConfig};
 use smbcloud_ascapi_frontend::review;
 use smbcloud_ascapi_frontend::upload::{self, upload_package, validate_app, AltoolAuth, AltoolOp};
 use smbcloud_ascapi_pricing::app_price::PriceKind;
@@ -30,6 +31,7 @@ use smbcloud_ascapi_signing::profile::{
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// Add/update App Store Connect app metadata (apps, app infos, app store
 /// versions, and their localizations) from the terminal or a script.
@@ -144,6 +146,26 @@ enum Command {
         #[command(subcommand)]
         command: TestflightCommand,
     },
+    /// Local signing health checks that compare this machine against App
+    /// Store Connect. macOS only — they read the login keychain.
+    #[cfg(target_os = "macos")]
+    Signing {
+        #[command(subcommand)]
+        command: SigningCommand,
+    },
+}
+
+/// macOS-only signing diagnostics.
+#[cfg(target_os = "macos")]
+#[derive(Subcommand)]
+enum SigningCommand {
+    /// Cross-check the login keychain against Apple's certificates and
+    /// report which of Apple's certificates this machine can actually sign
+    /// with — i.e. which ones have their private key present locally.
+    ///
+    /// Read-only: it lists certificates and inspects the keychain, and
+    /// never writes or transmits key material.
+    Doctor,
 }
 
 #[derive(Subcommand)]
@@ -554,6 +576,27 @@ enum AppsCommand {
         /// Block until App Store Connect finishes processing the build.
         #[arg(long)]
         wait: bool,
+    },
+    /// Poll `GET /v1/builds?filter[app]={id}` until the newest matching build
+    /// finishes processing (VALID) or fails (INVALID/FAILED), or the timeout
+    /// elapses. This is the signal that confirms an upload or a
+    /// binary-rejection fix worked. Narrow with `--version` /
+    /// `--pre-release-version` when more than one upload is in flight.
+    AwaitProcessing {
+        app_id: String,
+        /// `filter[version]` — the build (upload) number, e.g. `42`.
+        #[arg(long)]
+        version: Option<String>,
+        /// `filter[preReleaseVersion.version]` — the marketing version the
+        /// build sits under, e.g. `1.1.0`.
+        #[arg(long)]
+        pre_release_version: Option<String>,
+        /// Seconds between polls.
+        #[arg(long, default_value_t = 30)]
+        interval: u64,
+        /// Give up after this many seconds without a terminal state.
+        #[arg(long, default_value_t = 30 * 60)]
+        timeout: u64,
     },
 }
 
@@ -972,6 +1015,22 @@ async fn main() -> Result<()> {
         }
         Command::SalesReports { command } => run_sales_reports(&client, command).await,
         Command::Testflight { command } => run_testflight(&client, command, cli.dry_run).await,
+        #[cfg(target_os = "macos")]
+        Command::Signing { command } => run_signing(&client, command).await,
+    }
+}
+
+/// macOS-only signing diagnostics. Kept out of MCP: a tool call doesn't
+/// need to inspect the operator's login keychain.
+#[cfg(target_os = "macos")]
+async fn run_signing(client: &Client, command: SigningCommand) -> Result<()> {
+    match command {
+        SigningCommand::Doctor => {
+            let report = smbcloud_ascapi_frontend::run_doctor(client)
+                .await
+                .map_err(|error| anyhow::anyhow!(error))?;
+            print_json(&report)
+        }
     }
 }
 
@@ -1186,6 +1245,40 @@ async fn run_apps(
                 _ if outcome.success => {}
                 Some(code) => anyhow::bail!("altool upload failed with exit code {code}"),
                 None => anyhow::bail!("altool upload was killed by a signal"),
+            }
+            Ok(())
+        }
+        AppsCommand::AwaitProcessing {
+            app_id,
+            version,
+            pre_release_version,
+            interval,
+            timeout,
+        } => {
+            let filter = BuildFilter {
+                version,
+                pre_release_version,
+                processing_state: None,
+            };
+            let config = AwaitConfig {
+                interval: Duration::from_secs(interval),
+                timeout: Duration::from_secs(timeout),
+            };
+            let outcome = await_processing(client, &app_id, &filter, config)
+                .await
+                .map_err(anyhow::Error::msg)?;
+            print_json(&outcome)?;
+            if outcome.timed_out {
+                anyhow::bail!(
+                    "timed out after {}s waiting for processing",
+                    outcome.waited_secs
+                );
+            }
+            if !outcome.valid {
+                anyhow::bail!(
+                    "build finished processing but is not valid (state: {})",
+                    outcome.processing_state.as_deref().unwrap_or("unknown")
+                );
             }
             Ok(())
         }

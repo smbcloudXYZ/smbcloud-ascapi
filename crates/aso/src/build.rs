@@ -97,6 +97,13 @@ pub trait BuildsApi {
     /// Pass `&BuildFilter::default()` for every build, or set fields to
     /// narrow by build number, pre-release (marketing) version, or
     /// processing state.
+    ///
+    /// The `limit=200` this sends is a *page size*, not a ceiling on the
+    /// result: [`Client::list_all`] follows Apple's `links.next` cursor until
+    /// the collection is exhausted, so an app with more than 200 builds still
+    /// returns all of them — 200 is just the largest page ASC allows for this
+    /// collection, which keeps the round-trip count down. Do not read the
+    /// vector's length as "the 200 most recent builds."
     async fn list_builds(&self, app_id: &str, filter: &BuildFilter) -> Result<Vec<Build>>;
 
     /// `GET /v1/builds/{id}` — a single build by its App Store Connect id.
