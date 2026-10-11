@@ -1,7 +1,7 @@
 //! The bearer-token abstraction the [`Client`](crate::Client) mints from.
 //!
 //! App Store Connect wants a short-lived ES256 JWT on every request. The
-//! usual way to produce one is an [`ApiKey`](crate::ApiKey) signing its own
+//! usual way to produce one is an [`ApiKey`] signing its own
 //! claims, but it isn't the only way: CI often injects a token minted
 //! elsewhere, and tests want a fixed string. [`TokenSource`] is the seam
 //! that lets all three flow through the same client without the client
