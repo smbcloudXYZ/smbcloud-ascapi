@@ -68,6 +68,24 @@ stale `AuthKey_<id>.p8` and fail with a 401, and `--auth-string` would put
 the key in the process table. Upload is CLI-only, because a tool call that
 blocks for minutes and publishes a build doesn't belong in MCP.
 
+## Git branching workflow
+
+Branches flow in one direction: `main` ← `development` ← feature branch.
+
+- `main` is the release branch. Never commit to it directly; it only advances
+  by merging `development`.
+- `development` is the integration/base branch. Never commit to it directly
+  either — every change lands through a pull request.
+- Do the work on a short-lived **feature branch** cut from `development`
+  (`feat/…`, `fix/…`, `docs/…`), then **open a PR into `development`**. Let CI
+  (fmt / clippy `-D warnings` / test / doc / lower-crate solo builds) pass
+  before merge.
+- When `development` is ready to release, it is merged into `main` via its own
+  PR — not by pushing commits onto `main`.
+
+So: branch off `development`, push the feature branch, open a PR → `development`.
+Do not commit straight to `development` or `main`.
+
 ## Verify before committing
 
 CI (`.github/workflows/ci.yml`, ubuntu + macOS) runs these, and warnings are
