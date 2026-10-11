@@ -7,7 +7,7 @@
 use async_trait::async_trait;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
-use smbcloud_ascapi_core::jsonapi::{Document, ListDocument, Resource};
+use smbcloud_ascapi_core::jsonapi::{Document, Resource};
 use smbcloud_ascapi_core::Client;
 use smbcloud_ascapi_core::Result;
 
@@ -45,9 +45,7 @@ pub trait AppInfosApi {
 impl AppInfosApi for Client {
     async fn list_app_infos(&self, app_id: &str) -> Result<Vec<AppInfo>> {
         let path = format!("/v1/apps/{app_id}/appInfos");
-        let doc: ListDocument<AppInfoAttributes> =
-            self.request(Method::GET, &path, &[], None::<&()>).await?;
-        Ok(doc.data)
+        self.list_all::<AppInfoAttributes>(&path, &[]).await
     }
 
     async fn get_app_info(&self, id: &str) -> Result<AppInfo> {

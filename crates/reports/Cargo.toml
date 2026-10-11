@@ -1,0 +1,16 @@
+[package]
+name = "smbcloud-ascapi-reports"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Sales report downloads through the App Store Connect API."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+smbcloud-ascapi-core = { workspace = true }

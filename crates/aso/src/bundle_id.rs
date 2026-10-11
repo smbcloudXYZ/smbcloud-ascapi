@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
-use smbcloud_ascapi_core::jsonapi::{CreateBody, CreateData, Document, ListDocument, Resource};
+use smbcloud_ascapi_core::jsonapi::{CreateBody, CreateData, Document, Resource};
 use smbcloud_ascapi_core::Client;
 use smbcloud_ascapi_core::Result;
 
@@ -65,6 +65,12 @@ pub trait BundleIdsApi {
     /// check whether a bundle ID is already registered before trying to
     /// create it, or before creating an App Store Version under an app
     /// that uses it.
+    ///
+    /// App Store Connect's `filter[identifier]` is a case-insensitive
+    /// substring match: `ai.splitfire.SplitfireAI` also returns
+    /// `….topshelf`, `-Debug` and `ai.splitfire.SplitFireAIWatch`. The rows
+    /// are cut to the exact identifier here, so an empty result really
+    /// means "not registered".
     async fn list_bundle_ids(&self, filter_identifier: Option<&str>) -> Result<Vec<BundleId>>;
 
     /// `POST /v1/bundleIds` — registers a new bundle ID with the developer
@@ -79,15 +85,18 @@ impl BundleIdsApi for Client {
         if let Some(identifier) = filter_identifier {
             query.push(("filter[identifier]", identifier));
         }
-        // Apple's default page size is 20. Without this an unfiltered list
-        // silently stops at the first 20 identifiers, which reads as "that
-        // bundle ID is not registered" for anything further down.
+        // 200 rows per page instead of Apple's default 20 — fewer round
+        // trips. `list_all` follows `links.next` so no page boundary can
+        // truncate the result.
         query.push(("limit", "200"));
 
-        let doc: ListDocument<BundleIdAttributes> = self
-            .request(Method::GET, "/v1/bundleIds", &query, None::<&()>)
+        let bundle_ids = self
+            .list_all::<BundleIdAttributes>("/v1/bundleIds", &query)
             .await?;
-        Ok(doc.data)
+        Ok(match filter_identifier {
+            Some(identifier) => exact_identifier(bundle_ids, identifier),
+            None => bundle_ids,
+        })
     }
 
     async fn create_bundle_id(&self, attributes: BundleIdCreateAttributes) -> Result<BundleId> {
@@ -105,9 +114,40 @@ impl BundleIdsApi for Client {
     }
 }
 
+/// Keep the bundle IDs whose identifier is exactly `identifier`.
+fn exact_identifier(bundle_ids: Vec<BundleId>, identifier: &str) -> Vec<BundleId> {
+    bundle_ids
+        .into_iter()
+        .filter(|bundle_id| bundle_id.attributes.identifier.as_deref() == Some(identifier))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use smbcloud_ascapi_core::jsonapi::ListDocument;
+
+    /// Trimmed from what `filter[identifier]=ai.splitfire.SplitfireAI`
+    /// actually returned: neighbours, a Services ID, and a different app
+    /// matched through case folding.
+    #[test]
+    fn an_identifier_filter_keeps_only_the_exact_match() {
+        let doc: ListDocument<BundleIdAttributes> = serde_json::from_value(serde_json::json!({
+            "data": [
+                { "id": "A", "type": "bundleIds", "attributes": { "identifier": "ai.splitfire.SplitfireAIAuth", "platform": "SERVICES" } },
+                { "id": "B", "type": "bundleIds", "attributes": { "identifier": "ai.splitfire.SplitfireAI", "platform": "UNIVERSAL" } },
+                { "id": "C", "type": "bundleIds", "attributes": { "identifier": "ai.splitfire.SplitfireAI.topshelf", "platform": "UNIVERSAL" } },
+                { "id": "D", "type": "bundleIds", "attributes": { "identifier": "ai.splitfire.SplitFireAIWatch", "platform": "UNIVERSAL" } }
+            ]
+        }))
+        .unwrap();
+        let exact = exact_identifier(doc.data.clone(), "ai.splitfire.SplitfireAI");
+        assert_eq!(
+            exact.iter().map(|b| b.id.as_str()).collect::<Vec<_>>(),
+            ["B"]
+        );
+        assert!(exact_identifier(doc.data, "ai.splitfire.Splitfire").is_empty());
+    }
 
     #[test]
     fn a_services_identifier_does_not_break_the_list() {

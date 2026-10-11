@@ -1,4 +1,4 @@
-//! The `ascapi --mcp` server.
+//! The `asc --mcp` server.
 //!
 //! Holds no state: every tool resolves its App Store Connect credentials
 //! from the environment per call, so an unconfigured server still starts
@@ -76,7 +76,7 @@ impl ServerHandler for AscapiMcpServer {
                  makes its certificate permanently unusable. Revocation is deliberately not \
                  offered here, because revoking a distribution certificate invalidates every \
                  provisioning profile embedding it for the whole team at once; run \
-                 `ascapi certificates revoke` from a terminal instead. Requires ASC_API_KEY, \
+                 `asc certificates revoke` from a terminal instead. Requires ASC_API_KEY, \
                  ASC_ISSUER_ID, and a readable .p8 key.",
             )
     }
