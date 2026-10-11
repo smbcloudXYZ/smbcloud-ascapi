@@ -45,9 +45,14 @@ pub struct AppUpdateAttributes {
 /// to call these on a `Client`.
 #[async_trait]
 pub trait AppsApi {
-    /// `GET /v1/apps`, optionally narrowed with `filter[bundleId]` — the
-    /// usual way to resolve an app's ASC id from the bundle identifier
-    /// already baked into an Xcode project.
+    /// `GET /v1/apps`, optionally narrowed to the app with exactly this
+    /// bundle identifier — the usual way to resolve an app's ASC id from
+    /// the bundle identifier already baked into an Xcode project.
+    ///
+    /// App Store Connect's `filter[bundleId]` matches substrings, so
+    /// `ai.splitfire.KaroKowe` also returns `ai.splitfire.KaroKoweJam`, and
+    /// listed first. The filter still goes to the server to keep the
+    /// response small, and the rows are then cut to exact matches here.
     async fn list_apps(&self, filter_bundle_id: Option<&str>) -> Result<Vec<App>>;
 
     async fn get_app(&self, app_id: &str) -> Result<App>;
@@ -62,7 +67,11 @@ impl AppsApi for Client {
         if let Some(bundle_id) = filter_bundle_id {
             query.push(("filter[bundleId]", bundle_id));
         }
-        self.list_all::<AppAttributes>("/v1/apps", &query).await
+        let apps = self.list_all::<AppAttributes>("/v1/apps", &query).await?;
+        Ok(match filter_bundle_id {
+            Some(bundle_id) => exact_bundle_id(apps, bundle_id),
+            None => apps,
+        })
     }
 
     async fn get_app(&self, app_id: &str) -> Result<App> {
@@ -84,5 +93,36 @@ impl AppsApi for Client {
         let doc: Document<AppAttributes> =
             self.request(Method::PATCH, &path, &[], Some(&body)).await?;
         Ok(doc.data)
+    }
+}
+
+/// Keep the apps whose bundle identifier is exactly `bundle_id`.
+fn exact_bundle_id(apps: Vec<App>, bundle_id: &str) -> Vec<App> {
+    apps.into_iter()
+        .filter(|app| app.attributes.bundle_id.as_deref() == Some(bundle_id))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smbcloud_ascapi_core::jsonapi::ListDocument;
+
+    /// The shape App Store Connect returned for `filter[bundleId]=
+    /// ai.splitfire.KaroKowe`: the longer bundle ID first.
+    #[test]
+    fn a_bundle_id_filter_keeps_only_the_exact_match() {
+        let doc: ListDocument<AppAttributes> = serde_json::from_value(serde_json::json!({
+            "data": [
+                { "id": "6787445875", "type": "apps",
+                  "attributes": { "bundleId": "ai.splitfire.KaroKoweJam", "name": "KaroKowe Jam" } },
+                { "id": "6756801861", "type": "apps",
+                  "attributes": { "bundleId": "ai.splitfire.KaroKowe", "name": "Karaoke KaroKowe" } }
+            ]
+        }))
+        .unwrap();
+        let apps = exact_bundle_id(doc.data, "ai.splitfire.KaroKowe");
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].id, "6756801861");
     }
 }

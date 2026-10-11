@@ -61,6 +61,15 @@ pub struct ProfileSummary {
     /// profile can also be unusable while unexpired if its certificate was
     /// revoked — check `profile_state` for that case.
     pub expired: Option<bool>,
+    /// The bundle ID's resource id, set only when the caller asked for it
+    /// (`profiles list --with-bundle-id`), since it costs a request per
+    /// profile.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bundle_id: Option<String>,
+    /// The bundle identifier itself, e.g. `ai.splitfire.SplitfireAI`. Set
+    /// alongside `bundle_id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bundle_identifier: Option<String>,
 }
 
 impl ProfileSummary {
@@ -86,6 +95,8 @@ impl ProfileSummary {
             created_date: profile.attributes.created_date.clone(),
             expiration_date,
             expired,
+            bundle_id: None,
+            bundle_identifier: None,
         }
     }
 }
@@ -185,6 +196,8 @@ mod tests {
             created_date: Some("2026-08-26T20:03:07".to_string()),
             expiration_date: Some("2027-08-06T19:49:55".to_string()),
             expired: Some(false),
+            bundle_id: None,
+            bundle_identifier: None,
         };
         let json = serde_json::to_string(&summary).expect("serializes");
         assert!(!json.contains("profileContent"));
@@ -204,6 +217,8 @@ mod tests {
                 created_date: None,
                 expiration_date: None,
                 expired: None,
+                bundle_id: None,
+                bundle_identifier: None,
             },
             path: "/tmp/out/app.provisionprofile".to_string(),
             bytes: 12577,

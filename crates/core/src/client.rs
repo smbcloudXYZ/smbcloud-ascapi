@@ -270,6 +270,60 @@ fn api_error(status: StatusCode, bytes: &[u8]) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::token::{MintedToken, StaticToken};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// Counts mints so the tests can see when the client goes back to the
+    /// source instead of its cache.
+    struct CountingSource {
+        mints: Arc<AtomicUsize>,
+        lifetime_secs: u64,
+    }
+
+    impl TokenSource for CountingSource {
+        fn mint(&self) -> Result<MintedToken> {
+            let n = self.mints.fetch_add(1, Ordering::SeqCst) + 1;
+            Ok(MintedToken::new(format!("token-{n}"), self.lifetime_secs))
+        }
+    }
+
+    fn counting_client(lifetime_secs: u64) -> (Client, Arc<AtomicUsize>) {
+        let mints = Arc::new(AtomicUsize::new(0));
+        let client = Client::new(CountingSource {
+            mints: mints.clone(),
+            lifetime_secs,
+        });
+        (client, mints)
+    }
+
+    #[test]
+    fn a_fresh_token_is_reused_from_the_cache() {
+        let (client, mints) = counting_client(20 * 60);
+        assert_eq!(client.bearer_token().unwrap(), "token-1");
+        assert_eq!(client.bearer_token().unwrap(), "token-1");
+        assert_eq!(mints.load(Ordering::SeqCst), 1);
+    }
+
+    /// A lifetime inside the refresh margin is already "about to expire",
+    /// so every request mints again rather than sending a token Apple may
+    /// reject mid-flight.
+    #[test]
+    fn a_token_inside_the_refresh_margin_is_minted_again() {
+        let (client, mints) = counting_client(TOKEN_REFRESH_MARGIN.as_secs());
+        assert_eq!(client.bearer_token().unwrap(), "token-1");
+        assert_eq!(client.bearer_token().unwrap(), "token-2");
+        assert_eq!(mints.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn new_accepts_a_static_token_and_a_boxed_source() {
+        let client = Client::new(StaticToken::new("eyJ.static"));
+        assert_eq!(client.bearer_token().unwrap(), "eyJ.static");
+
+        let boxed: Box<dyn TokenSource> = Box::new(StaticToken::new("eyJ.boxed"));
+        assert_eq!(Client::new(boxed).bearer_token().unwrap(), "eyJ.boxed");
+    }
 
     // `links.next` is the whole paging decision, so it is pinned against the
     // URL shape App Store Connect actually sends rather than a hand-made one.

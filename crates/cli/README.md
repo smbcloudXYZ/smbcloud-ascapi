@@ -1,6 +1,6 @@
 # App Store Connect Signing
 
-`ascapi` issues and inspects Apple signing certificates from the terminal
+`asc` issues and inspects Apple signing certificates from the terminal
 or as an MCP server, without a trip to the developer portal. It also
 covers App Store Connect's App Metadata surface: apps, app infos, app
 store versions, bundle IDs, screenshots, and their localizations.
@@ -39,12 +39,12 @@ Reports, then request a report date and frequency:
 export ASC_VENDOR_NUMBER=12345678
 
 # Yesterday's paid-app and in-app purchase sales.
-ascapi sales-reports download \
+asc sales-reports download \
   --frequency DAILY \
   --report-date 2026-09-11
 
 # Save a monthly report rather than printing it to stdout.
-ascapi sales-reports download \
+asc sales-reports download \
   --frequency MONTHLY \
   --report-date 2026-08 \
   --output sales-2026-08.json
@@ -57,8 +57,8 @@ use `--version` where that layout requires a report format version.
 ## Signing certificates
 
 ```bash
-ascapi certificates list --type distribution
-ascapi certificates create --type mac-installer-distribution --out-dir ~/certs
+asc certificates list --type distribution
+asc certificates create --type mac-installer-distribution --out-dir ~/certs
 ```
 
 `create` generates an RSA 2048 key pair locally, sends Apple only a
@@ -79,7 +79,7 @@ never saved.
 ## MCP server
 
 ```bash
-ascapi --mcp
+asc --mcp
 ```
 
 Speaks MCP over stdio and exposes 28 tools: every operation the command
@@ -101,7 +101,7 @@ Two deliberate absences:
 - **No revocation tool.** Revoking a signing certificate invalidates every
   provisioning profile embedding it, for every teammate and every CI job,
   at once and irreversibly. That is the one delete no confirmation string a
-  model types on your behalf makes safe, so `ascapi certificates revoke`
+  model types on your behalf makes safe, so `asc certificates revoke`
   stays on the command line, where a human is the one typing. A test fails
   the build if it ever appears in the tool list.
 - **No key material in tool results.** `certificate_create` returns the

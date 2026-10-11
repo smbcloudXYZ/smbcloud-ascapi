@@ -66,6 +66,24 @@ pub struct AppStoreVersionListRequest {
 }
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct BuildListRequest {
+    /// App Store Connect app id whose builds to list.
+    pub app_id: String,
+    /// Only return builds with this build number (CFBundleVersion), e.g.
+    /// 42. Not the marketing version; use pre_release_version for that.
+    #[serde(default)]
+    pub version: Option<String>,
+    /// Only return builds under this marketing version
+    /// (CFBundleShortVersionString), e.g. 1.1.0.
+    #[serde(default)]
+    pub pre_release_version: Option<String>,
+    /// Only return builds in this processing state: PROCESSING, FAILED,
+    /// INVALID, or VALID.
+    #[serde(default)]
+    pub processing_state: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct IdRequest {
     /// App Store Connect resource id.
     pub id: String,

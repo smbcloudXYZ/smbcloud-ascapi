@@ -15,6 +15,8 @@ use smbcloud_ascapi_aso::build::BuildFilter;
 use smbcloud_ascapi_aso::bundle_id::{BundleIdCreateAttributes, BundleIdPlatform};
 use smbcloud_ascapi_aso::prelude::*;
 use smbcloud_ascapi_core::{ApiKey, Client};
+use smbcloud_ascapi_frontend::review;
+use smbcloud_ascapi_frontend::upload::{self, upload_package, AltoolAuth};
 use smbcloud_ascapi_pricing::app_price::PriceKind;
 use smbcloud_ascapi_pricing::prelude::*;
 use smbcloud_ascapi_reports::prelude::*;
@@ -31,7 +33,7 @@ use std::path::PathBuf;
 /// Add/update App Store Connect app metadata (apps, app infos, app store
 /// versions, and their localizations) from the terminal or a script.
 #[derive(Parser)]
-#[command(name = "ascapi", version, about)]
+#[command(name = "asc", version, about)]
 struct Cli {
     /// App Store Connect API key ID (Users and Access → Integrations → App
     /// Store Connect API). Not required with `--mcp`, which resolves
@@ -83,6 +85,12 @@ enum Command {
     AppStoreVersions {
         #[command(subcommand)]
         command: AppStoreVersionsCommand,
+    },
+    /// Send an App Store Version to App Review, see what's waiting, or
+    /// withdraw a submission that hasn't been reviewed yet.
+    ReviewSubmissions {
+        #[command(subcommand)]
+        command: ReviewSubmissionsCommand,
     },
     /// Localized name/subtitle for an app's AppInfo.
     AppInfoLocalizations {
@@ -175,6 +183,10 @@ enum ProfilesCommand {
         /// Only show one type.
         #[arg(long, value_enum)]
         r#type: Option<CliProfileType>,
+        /// Add each profile's bundle ID (`bundle_id`, `bundle_identifier`).
+        /// One extra request per profile.
+        #[arg(long)]
+        with_bundle_id: bool,
     },
     /// Create a profile over a bundle ID and one or more certificates.
     ///
@@ -415,6 +427,16 @@ enum AppsCommand {
         #[arg(long, value_enum)]
         platform: Option<CliPlatform>,
     },
+    /// Upload an exported `.ipa`/`.pkg` with `xcrun altool --upload-package`,
+    /// authenticated with the same key and `.p8` as every other command.
+    /// Afterwards, find the build with `apps builds <APP_ID> --version <N>`.
+    Upload {
+        /// The exported package (`xcodebuild -exportArchive` output).
+        package: PathBuf,
+        /// Block until App Store Connect finishes processing the build.
+        #[arg(long)]
+        wait: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -465,6 +487,33 @@ enum AppStoreVersionsCommand {
         #[arg(long)]
         build_id: String,
     },
+}
+
+#[derive(Subcommand)]
+enum ReviewSubmissionsCommand {
+    /// `GET /v1/reviewSubmissions?filter[app]={app_id}`.
+    List {
+        app_id: String,
+        #[arg(long, value_enum)]
+        platform: Option<CliPlatform>,
+        /// Only submissions in this state, e.g. READY_FOR_REVIEW,
+        /// WAITING_FOR_REVIEW, IN_REVIEW, UNRESOLVED_ISSUES, COMPLETE.
+        #[arg(long)]
+        state: Option<String>,
+    },
+    /// Submit an App Store Version for review: reuse the platform's open
+    /// submission or create one, add the version to it, then submit.
+    /// `--dry-run` reads everything and prints the plan without writing.
+    Submit {
+        app_id: String,
+        /// The App Store Version to submit (see `app-store-versions list`).
+        /// It needs a build attached (`app-store-versions set-build`).
+        #[arg(long)]
+        version_id: String,
+    },
+    /// `PATCH /v1/reviewSubmissions/{id}` with `canceled: true` — withdraw
+    /// a submission before App Review picks it up.
+    Cancel { id: String },
 }
 
 #[derive(Subcommand)]
@@ -766,18 +815,21 @@ async fn main() -> Result<()> {
         path
     });
 
+    let altool_auth = AltoolAuth {
+        key_id: key_id.clone(),
+        issuer_id: issuer_id.clone(),
+        private_key_path: private_key_path.clone(),
+    };
     let api_key = ApiKey::from_p8_file(&key_id, &issuer_id, &private_key_path)
         .with_context(|| format!("loading App Store Connect API key from {private_key_path:?}"))?;
     let client = Client::new(api_key);
 
     let Some(command) = cli.command else {
-        anyhow::bail!(
-            "no subcommand given; run `ascapi --help`, or `ascapi --mcp` for the MCP server"
-        )
+        anyhow::bail!("no subcommand given; run `asc --help`, or `asc --mcp` for the MCP server")
     };
 
     match command {
-        Command::Apps { command } => run_apps(&client, command, cli.dry_run).await,
+        Command::Apps { command } => run_apps(&client, &altool_auth, command, cli.dry_run).await,
         Command::BundleIds { command } => run_bundle_ids(&client, command, cli.dry_run).await,
         Command::AppStoreVersions { command } => {
             run_app_store_versions(&client, command, cli.dry_run).await
@@ -797,6 +849,9 @@ async fn main() -> Result<()> {
         Command::AppPrices { command } => run_app_prices(&client, command).await,
         Command::Certificates { command } => run_certificates(&client, command, cli.dry_run).await,
         Command::Profiles { command } => run_profiles(&client, command, cli.dry_run).await,
+        Command::ReviewSubmissions { command } => {
+            run_review_submissions(&client, command, cli.dry_run).await
+        }
         Command::SalesReports { command } => run_sales_reports(&client, command).await,
     }
 }
@@ -843,7 +898,12 @@ async fn run_sales_reports(client: &Client, command: SalesReportsCommand) -> Res
     }
 }
 
-async fn run_apps(client: &Client, command: AppsCommand, dry_run: bool) -> Result<()> {
+async fn run_apps(
+    client: &Client,
+    altool_auth: &AltoolAuth,
+    command: AppsCommand,
+    dry_run: bool,
+) -> Result<()> {
     match command {
         AppsCommand::List { bundle_id } => {
             let apps = client.list_apps(bundle_id.as_deref()).await?;
@@ -881,6 +941,29 @@ async fn run_apps(client: &Client, command: AppsCommand, dry_run: bool) -> Resul
         AppsCommand::PreReleaseVersions { app_id, platform } => {
             let platform = platform.map(Platform::from);
             print_json(&client.list_pre_release_versions(&app_id, platform).await?)
+        }
+        AppsCommand::Upload { package, wait } => {
+            if dry_run {
+                let mut argv = vec!["xcrun".to_string()];
+                argv.extend(
+                    upload::altool_args(&package, altool_auth, wait)
+                        .iter()
+                        .map(|arg| arg.to_string_lossy().into_owned()),
+                );
+                return print_json(&serde_json::json!({ "dry_run": true, "command": argv }));
+            }
+            let auth = altool_auth.clone();
+            let outcome =
+                tokio::task::spawn_blocking(move || upload_package(&package, &auth, wait))
+                    .await?
+                    .map_err(anyhow::Error::msg)?;
+            print_json(&outcome)?;
+            match outcome.exit_code {
+                _ if outcome.success => {}
+                Some(code) => anyhow::bail!("altool upload failed with exit code {code}"),
+                None => anyhow::bail!("altool upload was killed by a signal"),
+            }
+            Ok(())
         }
     }
 }
@@ -956,6 +1039,49 @@ async fn run_app_store_versions(
                 return Ok(());
             }
             print_json(&client.set_app_store_version_build(&id, &build_id).await?)
+        }
+    }
+}
+
+async fn run_review_submissions(
+    client: &Client,
+    command: ReviewSubmissionsCommand,
+    dry_run: bool,
+) -> Result<()> {
+    match command {
+        ReviewSubmissionsCommand::List {
+            app_id,
+            platform,
+            state,
+        } => {
+            let states: Vec<&str> = state.as_deref().into_iter().collect();
+            let submissions = client
+                .list_review_submissions(&app_id, platform.map(Into::into), &states)
+                .await?;
+            print_json(&submissions)
+        }
+        ReviewSubmissionsCommand::Submit { app_id, version_id } => {
+            let plan = review::plan_submission(client, &app_id, &version_id)
+                .await
+                .map_err(anyhow::Error::msg)?;
+            if dry_run {
+                match &plan.blocked {
+                    Some(reason) => println!("# dry run — would not submit: {reason}"),
+                    None => println!("# dry run — would submit this plan for review:"),
+                }
+                return print_json(&plan);
+            }
+            let submitted = review::submit_for_review(client, plan)
+                .await
+                .map_err(anyhow::Error::msg)?;
+            print_json(&submitted)
+        }
+        ReviewSubmissionsCommand::Cancel { id } => {
+            if dry_run {
+                println!("# dry run — would PATCH /v1/reviewSubmissions/{id} canceled: true");
+                return Ok(());
+            }
+            print_json(&client.cancel_review_submission(&id).await?)
         }
     }
 }
@@ -1384,7 +1510,11 @@ async fn run_profiles(client: &Client, command: ProfilesCommand, dry_run: bool) 
     use smbcloud_ascapi_frontend::time::now_iso8601;
 
     match command {
-        ProfilesCommand::List { name, r#type } => {
+        ProfilesCommand::List {
+            name,
+            r#type,
+            with_bundle_id,
+        } => {
             let mut profiles = client
                 .list_profiles(name.as_deref(), r#type.map(Into::into))
                 .await?;
@@ -1394,10 +1524,17 @@ async fn run_profiles(client: &Client, command: ProfilesCommand, dry_run: bool) 
                     .cmp(&b.attributes.expiration_date)
             });
             let now = now_iso8601();
-            let summaries: Vec<_> = profiles
+            let mut summaries: Vec<_> = profiles
                 .iter()
                 .map(|profile| ProfileSummary::from_resource(profile, &now))
                 .collect();
+            if with_bundle_id {
+                for summary in &mut summaries {
+                    let bundle = client.get_profile_bundle_id(&summary.id).await?;
+                    summary.bundle_identifier = bundle.attributes.identifier;
+                    summary.bundle_id = Some(bundle.id);
+                }
+            }
             print_json(&summaries)
         }
 
