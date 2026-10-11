@@ -20,6 +20,7 @@
 //!   `profileContent`, and [`profiles::download_profile`] returns the path
 //!   it wrote instead.
 
+pub mod await_processing;
 pub mod certificates;
 pub mod enums;
 pub mod env;
@@ -30,6 +31,9 @@ pub mod review;
 pub mod time;
 pub mod upload;
 
+pub use await_processing::{
+    await_processing, classify, AwaitConfig, AwaitOutcome, ProcessingClass,
+};
 pub use certificates::{
     certificate_type_from_str, issue_certificate, CertificateSummary, IssuedCertificate,
 };
