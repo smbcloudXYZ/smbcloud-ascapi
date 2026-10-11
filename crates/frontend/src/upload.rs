@@ -45,12 +45,34 @@ pub struct UploadOutcome {
     pub output: serde_json::Value,
 }
 
+/// Which altool operation to run against the package: the pre-flight
+/// `--validate-app` or the real `--upload-package`. They take the same
+/// authentication and the same output format, so they share one argv
+/// builder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AltoolOp {
+    /// `--validate-app`: run App Store Connect's checks without delivering
+    /// the binary. Catches most of what a failed upload would, in seconds.
+    Validate,
+    /// `--upload-package`: deliver the binary for real.
+    Upload,
+}
+
+impl AltoolOp {
+    fn flag(self) -> &'static str {
+        match self {
+            AltoolOp::Validate => "--validate-app",
+            AltoolOp::Upload => "--upload-package",
+        }
+    }
+}
+
 /// The arguments after `xcrun`. Separate from [`upload_package`] so the
 /// exact command line is testable and `--dry-run` can print it.
-pub fn altool_args(package: &Path, auth: &AltoolAuth, wait: bool) -> Vec<OsString> {
+pub fn altool_args(package: &Path, auth: &AltoolAuth, op: AltoolOp, wait: bool) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         "altool".into(),
-        "--upload-package".into(),
+        op.flag().into(),
         package.as_os_str().to_owned(),
         "--api-key".into(),
         auth.key_id.clone().into(),
@@ -61,7 +83,9 @@ pub fn altool_args(package: &Path, auth: &AltoolAuth, wait: bool) -> Vec<OsStrin
         "--output-format".into(),
         "json".into(),
     ];
-    if wait {
+    // --wait only means anything for an upload; validation is already
+    // synchronous, so don't pass a flag altool would reject there.
+    if wait && op == AltoolOp::Upload {
         args.push("--wait".into());
     }
     args
@@ -75,6 +99,16 @@ pub fn validate_package(package: &Path) -> Result<(), String> {
         .map(str::to_ascii_lowercase);
     match extension.as_deref() {
         Some("ipa") | Some("pkg") => {}
+        // A `.app` is a directory, so the generic "not a file" check below
+        // would mislabel the most common mistake — pointing altool at the
+        // built app instead of the exported archive. Name it precisely.
+        Some("app") => {
+            return Err(format!(
+                "{} is an .app bundle, not an uploadable package; export the \
+                 archive first (xcodebuild -exportArchive) to get an .ipa/.pkg",
+                package.display()
+            ))
+        }
         _ => {
             return Err(format!(
                 "{} is not an .ipa or .pkg; export the archive first \
@@ -83,8 +117,16 @@ pub fn validate_package(package: &Path) -> Result<(), String> {
             ))
         }
     }
-    if !package.is_file() {
+    // Distinguish "nothing here" from "here, but a directory" so the error
+    // points at the real problem instead of a generic "does not exist".
+    if !package.exists() {
         return Err(format!("{} does not exist", package.display()));
+    }
+    if !package.is_file() {
+        return Err(format!(
+            "{} is a directory, not a package file",
+            package.display()
+        ));
     }
     Ok(())
 }
@@ -104,6 +146,27 @@ pub fn upload_package(
     auth: &AltoolAuth,
     wait: bool,
 ) -> Result<UploadOutcome, String> {
+    run_altool(package, auth, AltoolOp::Upload, wait)
+}
+
+/// Run `xcrun altool --validate-app` and report what happened.
+///
+/// A pre-flight check that runs App Store Connect's validation without
+/// delivering the binary: it catches most of what a failed upload would
+/// (bad entitlements, missing icons, bundle-id mismatches) in seconds
+/// instead of minutes, before anything is uploaded. Same success/`Err`
+/// contract as [`upload_package`].
+pub fn validate_app(package: &Path, auth: &AltoolAuth) -> Result<UploadOutcome, String> {
+    // --wait is upload-only; validation is already synchronous.
+    run_altool(package, auth, AltoolOp::Validate, false)
+}
+
+fn run_altool(
+    package: &Path,
+    auth: &AltoolAuth,
+    op: AltoolOp,
+    wait: bool,
+) -> Result<UploadOutcome, String> {
     validate_package(package)?;
     if !auth.private_key_path.is_file() {
         return Err(format!(
@@ -113,7 +176,7 @@ pub fn upload_package(
     }
 
     let output = Command::new("xcrun")
-        .args(altool_args(package, auth, wait))
+        .args(altool_args(package, auth, op, wait))
         .stdin(Stdio::null())
         .stderr(Stdio::inherit())
         .output()
@@ -124,12 +187,34 @@ pub fn upload_package(
 
 fn outcome(package: &Path, exit_code: Option<i32>, stdout: &[u8]) -> UploadOutcome {
     let output = parse_output(stdout);
+    // A zero exit is necessary but not sufficient: altool has been seen to
+    // exit 0 while reporting errors in its JSON body (e.g. the
+    // `product-errors` array). Trust the exit code only when the body
+    // doesn't contradict it.
+    let success = exit_code == Some(0) && !has_errors(&output);
     UploadOutcome {
         package: package.display().to_string(),
-        success: exit_code == Some(0),
+        success,
         exit_code,
         delivery_id: find_delivery_id(&output),
         output,
+    }
+}
+
+/// altool reports failures in its JSON body under a handful of keys
+/// (`product-errors` / `product_errors` for upload, `errors` for
+/// validation). A non-empty array under any of them means the operation
+/// failed regardless of the exit code.
+fn has_errors(value: &serde_json::Value) -> bool {
+    const ERROR_KEYS: [&str; 3] = ["product-errors", "product_errors", "errors"];
+    match value {
+        serde_json::Value::Object(map) => {
+            ERROR_KEYS.iter().any(|key| {
+                matches!(map.get(*key), Some(serde_json::Value::Array(errors)) if !errors.is_empty())
+            }) || map.values().any(has_errors)
+        }
+        serde_json::Value::Array(items) => items.iter().any(has_errors),
+        _ => false,
     }
 }
 
@@ -183,7 +268,12 @@ mod tests {
 
     #[test]
     fn passes_the_resolved_key_file_rather_than_letting_altool_search() {
-        let args = strings(altool_args(Path::new("/out/Klepon.ipa"), &auth(), false));
+        let args = strings(altool_args(
+            Path::new("/out/Klepon.ipa"),
+            &auth(),
+            AltoolOp::Upload,
+            false,
+        ));
         assert_eq!(
             args,
             [
@@ -204,9 +294,36 @@ mod tests {
 
     #[test]
     fn never_puts_key_material_on_the_command_line() {
-        let args = strings(altool_args(Path::new("/out/Klepon.ipa"), &auth(), true));
+        let args = strings(altool_args(
+            Path::new("/out/Klepon.ipa"),
+            &auth(),
+            AltoolOp::Upload,
+            true,
+        ));
         assert!(!args.iter().any(|arg| arg == "--auth-string"));
         assert_eq!(args.last().map(String::as_str), Some("--wait"));
+    }
+
+    #[test]
+    fn validation_uses_validate_app_and_ignores_wait() {
+        let args = strings(altool_args(
+            Path::new("/out/Klepon.ipa"),
+            &auth(),
+            AltoolOp::Validate,
+            true,
+        ));
+        assert_eq!(args[1], "--validate-app");
+        assert!(
+            !args.iter().any(|arg| arg == "--wait"),
+            "--wait is upload-only: {args:?}"
+        );
+    }
+
+    #[test]
+    fn points_at_the_archive_when_given_an_app_bundle() {
+        let error = validate_package(Path::new("/out/Klepon.app")).unwrap_err();
+        assert!(error.contains(".app"), "unhelpful error: {error}");
+        assert!(error.contains("exportArchive"), "unhelpful error: {error}");
     }
 
     #[test]
@@ -249,6 +366,16 @@ mod tests {
         let documents = outcome.output.as_array().expect("two documents");
         assert_eq!(documents.len(), 2);
         assert_eq!(documents[0]["build-status"], "VALID");
+    }
+
+    #[test]
+    fn reports_failure_when_altool_exits_zero_but_the_body_has_errors() {
+        let body = br#"{"product-errors":[{"message":"Invalid bundle"}]}"#;
+        let outcome = outcome(Path::new("/out/Klepon.ipa"), Some(0), body);
+        assert!(
+            !outcome.success,
+            "a non-empty product-errors array means failure even on exit 0"
+        );
     }
 
     #[test]
