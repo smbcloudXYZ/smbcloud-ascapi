@@ -12,6 +12,17 @@ Companion plan: [`feature-plan-from-klepon-xcode-release-session.md`](./feature-
 upload *mechanism*; this one hardens the *pre-flight and verification* around
 it. Shared context between the two:
 
+> **Progress (2025-10-11, this session):** gh stack #27 (bottom→top)
+> #24 `docs/list-builds-pagination` → #25 `feat/signing-doctor` →
+> #26 `feat/apps-await-processing`, rebased onto `development`, all CI-clean
+> (fmt / clippy `-D warnings` / test / `RUSTDOCFLAGS=-D warnings` doc /
+> lower-crate solo builds), signed+verified, auto-merge enabled. This landed
+> finding **#2** (signing doctor), finding **#5** (await-processing), and
+> finding **#6** (list_builds pagination doc). Still open from this plan:
+> **#1** (pre-upload `altool --validate-app`), **#3** (body-aware `success`),
+> **#4** (`.app`-vs-`.pkg` message). The one live item for all of them is the
+> ASC smoke test, still blocked on credentials.
+
 - Both sessions hit the same root pain: a **stale private key / signing
   identity with the right id but wrong contents**, which surfaces as an
   indistinguishable 401 (klepon plan, "Separate / unaddressed bug") or, in
@@ -50,7 +61,7 @@ exposes `--validate-app` for exactly this: a fast server-side pre-flight
 - **Value:** turns a ~minutes-late failure into a seconds-early one; catches
   the common "wrong version / bad entitlement" class before upload.
 
-### 2. No local-keychain `signing doctor`  — HIGH
+### 2. No local-keychain `signing doctor`  — HIGH ✅ SHIPPED (PR #25)
 The `signing` crate (`certificate.rs`, `profile.rs`, `csr.rs`) talks **only
 to the ASC REST API**. `security find-identity` is called nowhere in the
 repo; there is no local-keychain code at all. So the exact stale-identity
@@ -92,7 +103,7 @@ just not exported yet. People routinely point the tool at the `.app`.
   "directory / wrong kind" from "path missing".
 - **Value:** tiny, same-file, removes a recurring confusing error.
 
-### 5. No non-blocking `await-processing` loop  — MEDIUM
+### 5. No non-blocking `await-processing` loop  — MEDIUM ✅ SHIPPED (PR #26)
 The only way to wait for ASC to finish processing a build is altool's
 `--wait`, which blocks the altool process for the whole duration. There's
 no poll-based path that uses the builds API (`BuildsApi::list_builds`,
@@ -103,8 +114,15 @@ caller poll on its own cadence.
   with backoff. Complements klepon's builds API; an MCP-friendly
   alternative to a blocking `--wait`.
 - **Value:** better UX for CI/agents; builds on existing klepon surface.
+- **Shipped (PR #26):** `asc apps await-processing <APP_ID>` with
+  `--version`, `--pre-release-version`, `--interval` (30s),
+  `--timeout` (1800s). Shared poll loop + pure `classify()` /
+  `AwaitConfig` / `AwaitOutcome` in `crates/frontend/src/await_processing.rs`
+  (serializes without key material; 7 in-module tests). Terminal map:
+  VALID → success, INVALID/FAILED → failure, else timeout → non-zero exit.
+  CLI-only for now; the pure core is MCP-ready if a tool is added later.
 
-### 6. `list_builds` limit=200 pagination  — LOW (doc-only)
+### 6. `list_builds` limit=200 pagination  — LOW (doc-only) ✅ SHIPPED (PR #24)
 `list_builds` caps at limit=200 with no cursor follow-through. Fine for
 normal apps; note it as a known limit. Overlaps klepon's open "MCP
 `list_builds` doesn't expose `BuildFilter`" item — fold into that rather
@@ -128,3 +146,7 @@ module, shared `--dry-run`/`altool_args` test scaffolding; #4 is cheap to
 fold in alongside). #2 on its own branch (new macOS-only keychain surface,
 `security` subprocess, cross-check against `CertificateApi`). Exercise #1
 and #3 under klepon's still-open "Live smoke test against ASC" item.
+
+**Status:** #2 shipped (PR #25). The `upload.rs` cluster (#3 + #1, with #4
+folded in) is still the next natural branch — one file, shared test
+scaffolding, all inside what ascapi already owns.
