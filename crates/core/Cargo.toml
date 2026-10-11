@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Shared transport for the App Store Connect API: JWT auth, the HTTP client, JSON:API envelopes, and error types."
+readme = "README.md"
 
 [lib]
 path = "src/lib.rs"

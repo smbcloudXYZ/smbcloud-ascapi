@@ -110,4 +110,4 @@ Two deliberate absences:
 
 ## Copyright
 
-© 2026 [Splitfire AB](https://5mb.app) ([smbCloud](https://smbcloud.xyz)).
+© 2026 PT Sigit Mitra Bangun ([smbCloud](https://smbcloud.xyz)).

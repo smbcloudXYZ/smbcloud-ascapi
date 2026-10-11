@@ -98,7 +98,7 @@ impl CertificateType {
 #[serde(rename_all = "camelCase")]
 pub struct CertificateAttributes {
     /// The certificate's common name, e.g.
-    /// `Apple Distribution: Splitfire AB (2TQF86ZACD)`. This is what
+    /// `Apple Distribution: PT Sigit Mitra Bangun (2TQF86ZACD)`. This is what
     /// `codesign --sign` matches when given a name rather than a hash.
     pub name: Option<String>,
     pub certificate_type: Option<CertificateType>,

@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "App Store Connect pricing resources: app price schedules, and the per-territory prices and price points hanging off them."
+readme = "README.md"
 
 [lib]
 path = "src/lib.rs"

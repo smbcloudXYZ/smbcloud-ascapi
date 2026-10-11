@@ -98,7 +98,7 @@ pub struct AppStoreVersionCreateRequest {
     pub platform: String,
     /// Marketing version string, e.g. 1.2.0.
     pub version_string: String,
-    /// Copyright line, e.g. "2026 Splitfire AB". Optional.
+    /// Copyright line, e.g. "2026 PT Sigit Mitra Bangun". Optional.
     #[serde(default)]
     pub copyright: Option<String>,
 }

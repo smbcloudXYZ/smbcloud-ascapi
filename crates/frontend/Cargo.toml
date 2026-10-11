@@ -6,6 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Shared operations behind the asc command line and MCP surfaces: credential resolution, result shaping, certificate issuance, and altool uploads."
+readme = "README.md"
 
 [lib]
 path = "src/lib.rs"
