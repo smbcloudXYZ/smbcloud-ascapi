@@ -240,3 +240,58 @@ impl AppStoreVersionsApi for Client {
 pub struct AppStoreVersionBuildRelationship {
     pub build: ToOne,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// `PATCH` responses are deserialized as a whole
+    /// [`AppStoreVersionAttributes`], so every attribute except `platform`
+    /// has to stay optional — otherwise a response that carries only the
+    /// platform (as a rename does) fails to parse after App Store Connect
+    /// has already applied the update. Making one of these required turns
+    /// this into a failure.
+    #[test]
+    fn a_version_response_omitting_every_optional_attribute_still_parses() {
+        let doc: Document<AppStoreVersionAttributes> = serde_json::from_value(json!({
+            "data": {
+                "id": "b1f9f3a2-6f9a-4a4e-8a4f-3f5b0a9c0d11",
+                "type": "appStoreVersions",
+                "attributes": { "platform": "IOS" }
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(doc.data.attributes.platform, Platform::Ios);
+        assert!(doc.data.attributes.version_string.is_none());
+        assert!(doc.data.attributes.copyright.is_none());
+    }
+
+    /// The other half of that contract: a response that does carry the
+    /// attributes round-trips, so `versionString` is read back from the
+    /// rename request's own reply.
+    #[test]
+    fn a_version_response_reads_back_the_renamed_string() {
+        let doc: Document<AppStoreVersionAttributes> = serde_json::from_value(json!({
+            "data": {
+                "id": "b1f9f3a2-6f9a-4a4e-8a4f-3f5b0a9c0d11",
+                "type": "appStoreVersions",
+                "attributes": {
+                    "platform": "MAC_OS",
+                    "versionString": "1.1.0",
+                    "appVersionState": "PREPARE_FOR_SUBMISSION",
+                    "copyright": "2026 SplitFire AB"
+                }
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(doc.data.attributes.platform, Platform::MacOs);
+        assert_eq!(doc.data.attributes.version_string.as_deref(), Some("1.1.0"));
+        assert_eq!(
+            doc.data.attributes.app_version_state.as_deref(),
+            Some("PREPARE_FOR_SUBMISSION")
+        );
+    }
+}
