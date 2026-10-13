@@ -894,6 +894,26 @@ fn dry_run_guard(dry_run: bool, value: &impl serde::Serialize) -> Result<bool> {
     Ok(dry_run)
 }
 
+/// Validate a `--version-string` before sending it. Apple takes one to
+/// three period-separated integers (`1.1` and `1.1.0` are both fine) and
+/// answers anything else with an opaque error, so the shape is checked
+/// here where the message can name the offending flag. Shared by create
+/// and update because both write the same attribute.
+fn validate_version_string(version_string: &str) -> Result<()> {
+    let parts = version_string.split('.').collect::<Vec<_>>();
+    let well_formed = parts.len() <= 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()));
+    if !well_formed {
+        anyhow::bail!(
+            "invalid --version-string `{version_string}`: expected one to three \
+             period-separated numbers, e.g. `1.1.0`"
+        );
+    }
+    Ok(())
+}
+
 /// Convert Apple's gzip-compressed TSV report to JSON without normalizing
 /// columns: report layouts vary by report type and Apple can add columns.
 fn sales_report_as_json(gzip: &[u8]) -> Result<Vec<serde_json::Value>> {
@@ -1343,6 +1363,7 @@ async fn run_app_store_versions(
             version_string,
             copyright,
         } => {
+            validate_version_string(&version_string)?;
             let attributes = AppStoreVersionCreateAttributes {
                 platform: platform.into(),
                 version_string,
@@ -1360,6 +1381,9 @@ async fn run_app_store_versions(
         } => {
             if version_string.is_none() && copyright.is_none() {
                 anyhow::bail!("nothing to update: pass --version-string and/or --copyright");
+            }
+            if let Some(version_string) = version_string.as_deref() {
+                validate_version_string(version_string)?;
             }
             let fields = AppStoreVersionUpdateFields {
                 version_string,
@@ -1985,6 +2009,7 @@ fn base64_decode(input: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::sales_report_as_json;
+    use super::validate_version_string;
     use flate2::write::GzEncoder;
     use flate2::Compression;
     use std::io::Write;
@@ -2035,6 +2060,30 @@ mod tests {
         assert!(error
             .to_string()
             .contains("reading the TSV header from Apple's sales report"));
+    }
+
+    #[test]
+    fn version_string_accepts_one_to_three_numbers() {
+        for version_string in ["1", "1.1", "1.1.0", "12.345.6789"] {
+            assert!(
+                validate_version_string(version_string).is_ok(),
+                "{version_string} should be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn version_string_rejects_non_numeric_or_too_many_parts() {
+        for version_string in [
+            "", "1.1.0.0", "1..0", "1.1.", ".1", "v1.1", "1.1-beta", "1,1",
+        ] {
+            let error = validate_version_string(version_string)
+                .expect_err(&format!("{version_string} should be rejected"));
+            assert!(
+                error.to_string().starts_with("invalid --version-string"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
