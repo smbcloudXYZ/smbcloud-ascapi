@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use smbcloud_ascapi_core::jsonapi::{
-    CreateBody, CreateData, Document, Resource, ResourceId, ToOne, UpdateRelationshipsBody,
-    UpdateRelationshipsData,
+    CreateBody, CreateData, Document, Resource, ResourceId, ToOne, UpdateBody, UpdateData,
+    UpdateRelationshipsBody, UpdateRelationshipsData,
 };
 use smbcloud_ascapi_core::Client;
 use smbcloud_ascapi_core::Result;
@@ -68,6 +68,21 @@ pub struct AppStoreVersionRelationships {
     pub app: ToOne,
 }
 
+/// Editable attributes for a `PATCH /v1/appStoreVersions/{id}`. App Store
+/// Connect has no "rename a version" action: changing `version_string` on
+/// the platform's editable version (e.g. a staged `1.0.9` to `1.1.0`) is a
+/// plain attribute update. Only the fields set here are sent, so passing
+/// just `version_string` leaves `copyright` untouched. The version must be
+/// in an editable state (`PREPARE_FOR_SUBMISSION`, `DEVELOPER_REJECTED`).
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppStoreVersionUpdateFields {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version_string: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub copyright: Option<String>,
+}
+
 /// Per-platform version records, the unit the store reviews.
 ///
 /// An extension trait rather than inherent methods, because `Client`
@@ -91,6 +106,15 @@ pub trait AppStoreVersionsApi {
         &self,
         app_id: &str,
         attributes: AppStoreVersionCreateAttributes,
+    ) -> Result<AppStoreVersion>;
+
+    /// `PATCH /v1/appStoreVersions/{id}` with attributes — e.g. change the
+    /// version string of the platform's editable version. Apple exposes no
+    /// separate rename action; this is how `1.0.9` becomes `1.1.0`.
+    async fn update_app_store_version(
+        &self,
+        id: &str,
+        fields: AppStoreVersionUpdateFields,
     ) -> Result<AppStoreVersion>;
 
     /// `DELETE /v1/appStoreVersions/{id}` — only allowed while the version
@@ -155,6 +179,24 @@ impl AppStoreVersionsApi for Client {
         let doc: Document<AppStoreVersionAttributes> = self
             .request(Method::POST, "/v1/appStoreVersions", &[], Some(&body))
             .await?;
+        Ok(doc.data)
+    }
+
+    async fn update_app_store_version(
+        &self,
+        id: &str,
+        fields: AppStoreVersionUpdateFields,
+    ) -> Result<AppStoreVersion> {
+        let path = format!("/v1/appStoreVersions/{id}");
+        let body = UpdateBody {
+            data: UpdateData {
+                resource_type: RESOURCE_TYPE,
+                id: id.to_string(),
+                attributes: fields,
+            },
+        };
+        let doc: Document<AppStoreVersionAttributes> =
+            self.request(Method::PATCH, &path, &[], Some(&body)).await?;
         Ok(doc.data)
     }
 

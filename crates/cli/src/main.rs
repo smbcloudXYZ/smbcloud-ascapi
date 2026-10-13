@@ -7,7 +7,9 @@ use smbcloud_ascapi_aso::app_info_localization::{
 use smbcloud_ascapi_aso::app_screenshot_set::{
     AppScreenshotSetCreateAttributes, ScreenshotDisplayType,
 };
-use smbcloud_ascapi_aso::app_store_version::{AppStoreVersionCreateAttributes, Platform};
+use smbcloud_ascapi_aso::app_store_version::{
+    AppStoreVersionCreateAttributes, AppStoreVersionUpdateFields, Platform,
+};
 use smbcloud_ascapi_aso::app_store_version_localization::{
     AppStoreVersionLocalizationCreateAttributes, AppStoreVersionLocalizationFields,
 };
@@ -635,6 +637,18 @@ enum AppStoreVersionsCommand {
         platform: CliPlatform,
         #[arg(long)]
         version_string: String,
+        #[arg(long)]
+        copyright: Option<String>,
+    },
+    /// `PATCH /v1/appStoreVersions/{id}` — edit a version's own attributes,
+    /// e.g. rename the platform's editable version (`--version-string
+    /// 1.1.0`). The version must be in an editable state. Apple has no
+    /// separate rename action and such a version can't be deleted once a
+    /// build exists, so this is the way to bump its number.
+    Update {
+        id: String,
+        #[arg(long)]
+        version_string: Option<String>,
         #[arg(long)]
         copyright: Option<String>,
     },
@@ -1338,6 +1352,23 @@ async fn run_app_store_versions(
                 return Ok(());
             }
             print_json(&client.create_app_store_version(&app_id, attributes).await?)
+        }
+        AppStoreVersionsCommand::Update {
+            id,
+            version_string,
+            copyright,
+        } => {
+            if version_string.is_none() && copyright.is_none() {
+                anyhow::bail!("nothing to update: pass --version-string and/or --copyright");
+            }
+            let fields = AppStoreVersionUpdateFields {
+                version_string,
+                copyright,
+            };
+            if dry_run_guard(dry_run, &fields)? {
+                return Ok(());
+            }
+            print_json(&client.update_app_store_version(&id, fields).await?)
         }
         AppStoreVersionsCommand::Delete { id } => {
             if dry_run {
