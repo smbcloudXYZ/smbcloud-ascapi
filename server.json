@@ -3,7 +3,7 @@
   "name": "io.github.smbcloudXYZ/ascapi",
   "title": "The App Stores Cooolest API",
   "description": "Forget Fastlane, this is the app stores coolest API.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "websiteUrl": "https://github.com/smbcloudXYZ/smbcloud-ascapi",
   "repository": {
     "url": "https://github.com/smbcloudXYZ/smbcloud-ascapi",
@@ -15,7 +15,7 @@
       "registryType": "cargo",
       "registryBaseUrl": "https://crates.io",
       "identifier": "smbcloud-ascapi-cli",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "transport": {
         "type": "stdio"
       },
