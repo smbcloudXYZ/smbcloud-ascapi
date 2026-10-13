@@ -185,6 +185,43 @@ enum TestflightCommand {
         #[command(subcommand)]
         command: BetaAppReviewSubmissionsCommand,
     },
+    /// Manage the per-locale "What to Test" notes testers see on a build.
+    BuildLocalizations {
+        #[command(subcommand)]
+        command: BetaBuildLocalizationsCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum BetaBuildLocalizationsCommand {
+    /// `GET /v1/betaBuildLocalizations?filter[build]={build_id}` — every
+    /// locale's note for a build (find the build with `apps builds`).
+    List {
+        /// The ASC build ID.
+        build_id: String,
+    },
+    /// `POST /v1/betaBuildLocalizations` — add a locale's note to a build.
+    /// A build holds one note per locale; use `update` if the locale already
+    /// has one.
+    Create {
+        /// The ASC build ID.
+        build_id: String,
+        /// BCP 47 locale tag, e.g. `en-US` or `id`.
+        #[arg(long)]
+        locale: String,
+        /// The "What to Test" text (up to 4000 characters).
+        #[arg(long)]
+        whats_new: String,
+    },
+    /// `PATCH /v1/betaBuildLocalizations/{id}` — replace the text of an
+    /// existing note (the id comes from `list`).
+    Update {
+        /// The ASC beta build localization ID.
+        id: String,
+        /// The "What to Test" text (up to 4000 characters).
+        #[arg(long)]
+        whats_new: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1154,6 +1191,38 @@ async fn run_testflight(client: &Client, command: TestflightCommand, dry_run: bo
                 }
                 let submission = client.submit_build_for_beta_review(&build_id).await?;
                 print_json(&submission)
+            }
+        },
+        TestflightCommand::BuildLocalizations { command } => match command {
+            BetaBuildLocalizationsCommand::List { build_id } => {
+                print_json(&client.list_beta_build_localizations(&build_id).await?)
+            }
+            BetaBuildLocalizationsCommand::Create {
+                build_id,
+                locale,
+                whats_new,
+            } => {
+                if dry_run {
+                    println!(
+                        "[dry-run] would create the {locale} \"What to Test\" note on build {build_id}:"
+                    );
+                    return print_json(&serde_json::json!({ "whatsNew": whats_new }));
+                }
+                let created = client
+                    .create_beta_build_localization(&build_id, &locale, Some(&whats_new))
+                    .await?;
+                print_json(&created)
+            }
+            BetaBuildLocalizationsCommand::Update { id, whats_new } => {
+                if dry_run {
+                    println!("[dry-run] would update \"What to Test\" note {id}:");
+                    return print_json(&serde_json::json!({ "whatsNew": whats_new }));
+                }
+                print_json(
+                    &client
+                        .update_beta_build_localization(&id, &whats_new)
+                        .await?,
+                )
             }
         },
     }
