@@ -3,26 +3,23 @@ name: ascapi-release
 description: >
   Cut a new release of the smbcloud-ascapi Rust workspace: merge development into
   main, bump the single workspace version with cargo-workspaces, create the
-  Release commit and matching tags, keep server.json in sync, then push the tag
-  so release-crates.yml publishes the crates to crates.io and dispatches the
-  GitHub and MCP Registry releases. Use whenever the user asks to
+  Release commit and matching tags, keep server.json in sync, publish the crates
+  to crates.io, and run the MCP Registry workflow. Use whenever the user asks to
   release, cut a version, tag, bump the version, publish to crates.io, or publish
   the MCP server for this repo. Covers the forge/remote quirks (GitHub, remote
   named "setoelkahfi"), the signing identity, and the registry workflow's
   hard invariants that will fail a release if violated.
 metadata:
   author: smbcloudXYZ
-  version: "1.1"
+  version: "1.0"
 ---
 
 # smbcloud-ascapi release runbook
 
 One Rust workspace, one version. The root `Cargo.toml` `[workspace.package]`
 `version` (around line 15) is the single source of truth — every crate inherits
-it with `version.workspace = true`. A release bumps that one number and tags
-it. Pushing the `vX.Y.Z` tag starts `.github/workflows/release-crates.yml`,
-which publishes the crates and then dispatches the GitHub release and the MCP
-Registry release.
+it with `version.workspace = true`. A release bumps that one number, tags it,
+publishes the crates, and republishes the MCP server.
 
 ## Facts that are easy to get wrong
 
@@ -128,66 +125,32 @@ grep -n '"version"' server.json          # both -> X.Y.Z
 sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1   # -> X.Y.Z
 git status --short                        # clean
 cargo check --workspace --locked
-```
-
-Push the branch first, then the tags. The tag push is what starts the
-publish, and the workflow checks out the tag, so `main` has to be on the
-remote before it runs:
-
-```sh
 git push setoelkahfi main
 git push setoelkahfi --tags --force       # --force only if you moved tags in step 3
 ```
 
-## Step 5 — `release-crates.yml` publishes the crates
+## Step 5 — publish crates to crates.io
 
-Pushing a `vX.Y.Z` tag starts `.github/workflows/release-crates.yml`. The
-per-crate `smbcloud-ascapi-*@X.Y.Z` tags don't match its `v*.*.*` filter, so
-they don't start extra runs. Three jobs run in order:
+Publish in dependency order (lower crates first), because the MCP Registry
+workflow verifies the **published** CLI crate, and the CLI depends on the rest:
 
-1. **`verify`** fails the run if the tag differs from the workspace version in
-   `Cargo.toml`, then runs `cargo fmt --check`, clippy with `-D warnings`,
-   `cargo test --workspace --locked`, and `cargo check` on `core`, `aso`,
-   `pricing`, `signing` and `reports` on their own.
-2. **`publish`** (environment `crates-io`) publishes `core`, `aso`, `pricing`,
-   `signing`, `reports`, `frontend`, `mcp`, `cli`, in that order, with
-   `cargo publish -p <crate> --locked`. Authentication is crates.io trusted
-   publishing: the job exchanges its GitHub OIDC token through
-   `rust-lang/crates-io-auth-action`, so there is no registry token secret.
-   A crate version that is already on crates.io is skipped, so re-running the
-   workflow after a partial failure resumes where it stopped.
-3. **`dispatch-distributions`** dispatches `release-github.yml` (six binaries
-   attached to a GitHub release) and `release-mcp-registry.yml`, both with the
-   same tag. It only runs when `publish` succeeded.
-
-Watch it with:
-
-```sh
-gh run list --workflow release-crates.yml --limit 3
-gh run watch <run-id>
+```
+core → aso / pricing / signing / reports → frontend → mcp → cli
 ```
 
-To run it by hand for an existing tag (for example after fixing a trusted
-publisher config), dispatch it against that tag:
-
 ```sh
-gh workflow run release-crates.yml --ref vX.Y.Z -f tag=vX.Y.Z
+cargo workspaces publish --from-git --allow-branch main --yes
 ```
 
-### One-time setup it depends on
+`--from-git` publishes exactly what the tags describe and skips versions already
+on crates.io (safe to re-run). If you publish manually with `cargo publish -p`,
+respect the order above and wait for each to index before the next.
 
-- Each of the eight crates has a trusted publisher on crates.io for repository
-  `smbcloudXYZ/smbcloud-ascapi` and workflow `release-crates.yml`. If a crate
-  is missing one, `cargo publish` fails for that crate and the later crates are
-  not published. Add the publisher and re-run.
-- If a trusted publisher names an environment, it must be `crates-io`, which
-  is the environment the `publish` job runs in.
+## Step 6 — publish the MCP server
 
-## Step 6 — MCP Registry release
-
-`release-mcp-registry.yml` is dispatched by step 5, so there is normally
-nothing to do here. It authenticates to the MCP Registry via GitHub OIDC (no
-secret) and enforces these invariants. A release fails if any is violated:
+Dispatch `.github/workflows/release-mcp-registry.yml` with the tag (e.g.
+`vX.Y.Z`). It authenticates to the MCP Registry via GitHub OIDC (no secret) and
+enforces these invariants — a release fails if any is violated:
 
 1. **Version match:** root `Cargo.toml` workspace version == tag (minus the `v`).
    Step 2 guarantees this.
@@ -197,47 +160,22 @@ secret) and enforces these invariants. A release fails if any is violated:
 3. **Ownership marker in the published crate:** the CLI crate downloaded from
    crates.io for this exact version must contain the same marker in its README.
    crates.io versions are immutable, so **the marker must be in the README
-   BEFORE you tag**. If a published version lacks it, you cannot fix that
-   version; you must cut a new release.
+   BEFORE you publish the crate in step 5** — if a published version lacks it,
+   you cannot fix that version; you must cut a new release. This is why step 5
+   precedes step 6.
 
 The workflow rewrites `server.json`'s version from the tag, publishes with
 `mcp-publisher` (treating "duplicate version" as success), and verifies the
-server is listed in the registry. It waits up to ten minutes for crates.io to
-index the CLI crate, so it is safe that it starts while step 5 is still
-publishing.
-
-To publish the server again for a tag, dispatch it yourself:
-
-```sh
-gh workflow run release-mcp-registry.yml --ref vX.Y.Z -f tag=vX.Y.Z
-```
-
-## Manual fallback
-
-Only if the workflow can't run (Actions outage, trusted publishing not set up
-yet). Publish in dependency order, because the CLI depends on the rest:
-
-```sh
-cargo workspaces publish --from-git --allow-branch main --yes
-```
-
-`--from-git` publishes exactly what the tags describe and skips versions
-already on crates.io. Then dispatch `release-github.yml` and
-`release-mcp-registry.yml` yourself with the tag.
+server is listed in the registry.
 
 ## Release-order summary
 
 merge → bump+tag → sync server.json into Release commit → verify sig & versions
-→ push `main`, then tags → `release-crates.yml` verifies and publishes → it
-dispatches the GitHub release and the MCP Registry release. Check the run in
-Actions; nothing after the tag push is manual.
+→ push main+tags → **publish crates (step 5)** → **then** run MCP Registry
+workflow (step 6). Steps 5 and 6 are order-dependent; don't swap them.
 
 ## References
 
-- `../../../.github/workflows/release-crates.yml` — verify, publish and
-  dispatch, in full.
-- `../../../.github/workflows/release-github.yml` — the binary build and GitHub
-  release.
 - `../../../.github/workflows/release-mcp-registry.yml` — the registry workflow
   and its invariant checks, in full.
 - Past release design notes live in `.agents/plans/` (upload / signing-identity

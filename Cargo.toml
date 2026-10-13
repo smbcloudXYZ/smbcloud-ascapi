@@ -12,20 +12,20 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.3.0"
 edition = "2021"
 authors = ["Seto Elkahfi <seto@smbcloud.xyz>"]
 license = "Apache-2.0"
 repository = "https://github.com/smbcloudXYZ/smbcloud-ascapi"
 
 [workspace.dependencies]
-smbcloud-ascapi-core = { version = "0.1.0", path = "crates/core" }
-smbcloud-ascapi-aso = { version = "0.1.0", path = "crates/aso" }
-smbcloud-ascapi-signing = { version = "0.1.0", path = "crates/signing" }
-smbcloud-ascapi-pricing = { version = "0.1.0", path = "crates/pricing" }
-smbcloud-ascapi-reports = { version = "0.1.0", path = "crates/reports" }
-smbcloud-ascapi-frontend = { version = "0.1.0", path = "crates/frontend" }
-smbcloud-ascapi-mcp = { version = "0.1.0", path = "crates/mcp" }
+smbcloud-ascapi-core = { version = "0.3.0", path = "crates/core" }
+smbcloud-ascapi-aso = { version = "0.3.0", path = "crates/aso" }
+smbcloud-ascapi-signing = { version = "0.3.0", path = "crates/signing" }
+smbcloud-ascapi-pricing = { version = "0.3.0", path = "crates/pricing" }
+smbcloud-ascapi-reports = { version = "0.3.0", path = "crates/reports" }
+smbcloud-ascapi-frontend = { version = "0.3.0", path = "crates/frontend" }
+smbcloud-ascapi-mcp = { version = "0.3.0", path = "crates/mcp" }
 anyhow = "1"
 clap = "4"
 jsonwebtoken = "9"
