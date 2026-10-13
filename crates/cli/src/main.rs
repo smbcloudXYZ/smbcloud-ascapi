@@ -7,7 +7,9 @@ use smbcloud_ascapi_aso::app_info_localization::{
 use smbcloud_ascapi_aso::app_screenshot_set::{
     AppScreenshotSetCreateAttributes, ScreenshotDisplayType,
 };
-use smbcloud_ascapi_aso::app_store_version::{AppStoreVersionCreateAttributes, Platform};
+use smbcloud_ascapi_aso::app_store_version::{
+    AppStoreVersionCreateAttributes, AppStoreVersionUpdateFields, Platform,
+};
 use smbcloud_ascapi_aso::app_store_version_localization::{
     AppStoreVersionLocalizationCreateAttributes, AppStoreVersionLocalizationFields,
 };
@@ -675,6 +677,18 @@ enum AppStoreVersionsCommand {
         #[arg(long)]
         copyright: Option<String>,
     },
+    /// `PATCH /v1/appStoreVersions/{id}` — edit a version's own attributes,
+    /// e.g. rename the platform's editable version (`--version-string
+    /// 1.1.0`). The version must be in an editable state. Apple has no
+    /// separate rename action and such a version can't be deleted once a
+    /// build exists, so this is the way to bump its number.
+    Update {
+        id: String,
+        #[arg(long)]
+        version_string: Option<String>,
+        #[arg(long)]
+        copyright: Option<String>,
+    },
     /// `DELETE /v1/appStoreVersions/{id}`.
     Delete { id: String },
     /// `PATCH /v1/appStoreVersions/{id}` — attach a `Build` (see
@@ -915,6 +929,26 @@ fn dry_run_guard(dry_run: bool, value: &impl serde::Serialize) -> Result<bool> {
         print_json(value)?;
     }
     Ok(dry_run)
+}
+
+/// Validate a `--version-string` before sending it. Apple takes one to
+/// three period-separated integers (`1.1` and `1.1.0` are both fine) and
+/// answers anything else with an opaque error, so the shape is checked
+/// here where the message can name the offending flag. Shared by create
+/// and update because both write the same attribute.
+fn validate_version_string(version_string: &str) -> Result<()> {
+    let parts = version_string.split('.').collect::<Vec<_>>();
+    let well_formed = parts.len() <= 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()));
+    if !well_formed {
+        anyhow::bail!(
+            "invalid --version-string `{version_string}`: expected one to three \
+             period-separated numbers, e.g. `1.1.0`"
+        );
+    }
+    Ok(())
 }
 
 /// Maximum length App Store Connect accepts for a "What to Test" note
@@ -1423,6 +1457,7 @@ async fn run_app_store_versions(
             version_string,
             copyright,
         } => {
+            validate_version_string(&version_string)?;
             let attributes = AppStoreVersionCreateAttributes {
                 platform: platform.into(),
                 version_string,
@@ -1432,6 +1467,26 @@ async fn run_app_store_versions(
                 return Ok(());
             }
             print_json(&client.create_app_store_version(&app_id, attributes).await?)
+        }
+        AppStoreVersionsCommand::Update {
+            id,
+            version_string,
+            copyright,
+        } => {
+            if version_string.is_none() && copyright.is_none() {
+                anyhow::bail!("nothing to update: pass --version-string and/or --copyright");
+            }
+            if let Some(version_string) = version_string.as_deref() {
+                validate_version_string(version_string)?;
+            }
+            let fields = AppStoreVersionUpdateFields {
+                version_string,
+                copyright,
+            };
+            if dry_run_guard(dry_run, &fields)? {
+                return Ok(());
+            }
+            print_json(&client.update_app_store_version(&id, fields).await?)
         }
         AppStoreVersionsCommand::Delete { id } => {
             if dry_run {
@@ -2048,6 +2103,7 @@ fn base64_decode(input: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::sales_report_as_json;
+    use super::validate_version_string;
     use super::validate_whats_new;
     use super::WHATS_NEW_MAX_LEN;
     use flate2::write::GzEncoder;
@@ -2100,6 +2156,30 @@ mod tests {
         assert!(error
             .to_string()
             .contains("reading the TSV header from Apple's sales report"));
+    }
+
+    #[test]
+    fn version_string_accepts_one_to_three_numbers() {
+        for version_string in ["1", "1.1", "1.1.0", "12.345.6789"] {
+            assert!(
+                validate_version_string(version_string).is_ok(),
+                "{version_string} should be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn version_string_rejects_non_numeric_or_too_many_parts() {
+        for version_string in [
+            "", "1.1.0.0", "1..0", "1.1.", ".1", "v1.1", "1.1-beta", "1,1",
+        ] {
+            let error = validate_version_string(version_string)
+                .expect_err(&format!("{version_string} should be rejected"));
+            assert!(
+                error.to_string().starts_with("invalid --version-string"),
+                "{error}"
+            );
+        }
     }
 
     #[test]

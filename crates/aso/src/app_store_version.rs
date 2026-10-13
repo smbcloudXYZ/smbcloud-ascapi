@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use smbcloud_ascapi_core::jsonapi::{
-    CreateBody, CreateData, Document, Resource, ResourceId, ToOne, UpdateRelationshipsBody,
-    UpdateRelationshipsData,
+    CreateBody, CreateData, Document, Resource, ResourceId, ToOne, UpdateBody, UpdateData,
+    UpdateRelationshipsBody, UpdateRelationshipsData,
 };
 use smbcloud_ascapi_core::Client;
 use smbcloud_ascapi_core::Result;
@@ -68,6 +68,21 @@ pub struct AppStoreVersionRelationships {
     pub app: ToOne,
 }
 
+/// Editable attributes for a `PATCH /v1/appStoreVersions/{id}`. App Store
+/// Connect has no "rename a version" action: changing `version_string` on
+/// the platform's editable version (e.g. a staged `1.0.9` to `1.1.0`) is a
+/// plain attribute update. Only the fields set here are sent, so passing
+/// just `version_string` leaves `copyright` untouched. The version must be
+/// in an editable state (`PREPARE_FOR_SUBMISSION`, `DEVELOPER_REJECTED`).
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppStoreVersionUpdateFields {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version_string: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub copyright: Option<String>,
+}
+
 /// Per-platform version records, the unit the store reviews.
 ///
 /// An extension trait rather than inherent methods, because `Client`
@@ -91,6 +106,15 @@ pub trait AppStoreVersionsApi {
         &self,
         app_id: &str,
         attributes: AppStoreVersionCreateAttributes,
+    ) -> Result<AppStoreVersion>;
+
+    /// `PATCH /v1/appStoreVersions/{id}` with attributes — e.g. change the
+    /// version string of the platform's editable version. Apple exposes no
+    /// separate rename action; this is how `1.0.9` becomes `1.1.0`.
+    async fn update_app_store_version(
+        &self,
+        id: &str,
+        fields: AppStoreVersionUpdateFields,
     ) -> Result<AppStoreVersion>;
 
     /// `DELETE /v1/appStoreVersions/{id}` — only allowed while the version
@@ -158,6 +182,24 @@ impl AppStoreVersionsApi for Client {
         Ok(doc.data)
     }
 
+    async fn update_app_store_version(
+        &self,
+        id: &str,
+        fields: AppStoreVersionUpdateFields,
+    ) -> Result<AppStoreVersion> {
+        let path = format!("/v1/appStoreVersions/{id}");
+        let body = UpdateBody {
+            data: UpdateData {
+                resource_type: RESOURCE_TYPE,
+                id: id.to_string(),
+                attributes: fields,
+            },
+        };
+        let doc: Document<AppStoreVersionAttributes> =
+            self.request(Method::PATCH, &path, &[], Some(&body)).await?;
+        Ok(doc.data)
+    }
+
     async fn delete_app_store_version(&self, id: &str) -> Result<()> {
         let path = format!("/v1/appStoreVersions/{id}");
         self.request_no_content::<()>(Method::DELETE, &path, &[], None)
@@ -197,4 +239,59 @@ impl AppStoreVersionsApi for Client {
 #[serde(rename_all = "camelCase")]
 pub struct AppStoreVersionBuildRelationship {
     pub build: ToOne,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// `PATCH` responses are deserialized as a whole
+    /// [`AppStoreVersionAttributes`], so every attribute except `platform`
+    /// has to stay optional — otherwise a response that carries only the
+    /// platform (as a rename does) fails to parse after App Store Connect
+    /// has already applied the update. Making one of these required turns
+    /// this into a failure.
+    #[test]
+    fn a_version_response_omitting_every_optional_attribute_still_parses() {
+        let doc: Document<AppStoreVersionAttributes> = serde_json::from_value(json!({
+            "data": {
+                "id": "b1f9f3a2-6f9a-4a4e-8a4f-3f5b0a9c0d11",
+                "type": "appStoreVersions",
+                "attributes": { "platform": "IOS" }
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(doc.data.attributes.platform, Platform::Ios);
+        assert!(doc.data.attributes.version_string.is_none());
+        assert!(doc.data.attributes.copyright.is_none());
+    }
+
+    /// The other half of that contract: a response that does carry the
+    /// attributes round-trips, so `versionString` is read back from the
+    /// rename request's own reply.
+    #[test]
+    fn a_version_response_reads_back_the_renamed_string() {
+        let doc: Document<AppStoreVersionAttributes> = serde_json::from_value(json!({
+            "data": {
+                "id": "b1f9f3a2-6f9a-4a4e-8a4f-3f5b0a9c0d11",
+                "type": "appStoreVersions",
+                "attributes": {
+                    "platform": "MAC_OS",
+                    "versionString": "1.1.0",
+                    "appVersionState": "PREPARE_FOR_SUBMISSION",
+                    "copyright": "2026 SplitFire AB"
+                }
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(doc.data.attributes.platform, Platform::MacOs);
+        assert_eq!(doc.data.attributes.version_string.as_deref(), Some("1.1.0"));
+        assert_eq!(
+            doc.data.attributes.app_version_state.as_deref(),
+            Some("PREPARE_FOR_SUBMISSION")
+        );
+    }
 }
