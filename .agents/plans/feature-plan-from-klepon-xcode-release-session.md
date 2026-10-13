@@ -30,6 +30,11 @@ Shipped as gh stack #9 (draft PRs, bottom to top):
       custom `TokenSource`) (#7).
 - [ ] MCP `list_builds` tool doesn't expose `BuildFilter` yet, so it lags
       the CLI.
+- [x] Documented `list_builds` limit=200 as page size, not a cap
+      (sitiai finding #6, PR #24).
+- [x] `asc apps await-processing` poll loop built on `BuildsApi::list_builds`
+      (sitiai finding #5, PR #26) — a non-blocking alternative to altool
+      `--wait`.
 
 ## Docs
 - [x] README crate table — builds API surface, altool upload.

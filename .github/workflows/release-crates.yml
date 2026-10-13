@@ -1,0 +1,200 @@
+name: Release crates.io
+
+# This is the only workflow that reacts to a tag push. It verifies the tag,
+# publishes every workspace crate to crates.io in dependency order, and then
+# dispatches the GitHub release and the MCP Registry release with the same
+# tag. Neither runs for a crate release that failed: the MCP Registry reads
+# the published crate, so it has to exist first.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.2.0)"
+        required: true
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: release-crates-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: Verify release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Set the release version
+        id: release
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            release_tag="${GITHUB_REF_NAME}"
+          else
+            release_tag="${{ github.event.inputs.tag }}"
+            release_tag="${release_tag#refs/tags/}"
+          fi
+          release_version="${release_tag#v}"
+
+          echo "tag=${release_tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${release_version}" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure tag matches the workspace version
+        shell: bash
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          if [ -z "$version" ]; then
+            echo "::error::Failed to read the workspace version from Cargo.toml"
+            exit 1
+          fi
+          if [ "$version" != "${{ steps.release.outputs.version }}" ]; then
+            echo "::error::Cargo.toml is ${version} but the tag is ${{ steps.release.outputs.version }}"
+            exit 1
+          fi
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace --locked
+
+      # Each lower crate has to build alone: a crate that only compiles
+      # because a sibling's features leak in through the workspace would fail
+      # for every consumer of the published crate.
+      - name: Check the lower crates build alone
+        shell: bash
+        run: |
+          for crate in core aso pricing signing reports; do
+            cargo check -p "smbcloud-ascapi-${crate}" --locked
+          done
+
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    needs: verify
+    environment:
+      name: crates-io
+    # OIDC is how we authenticate to crates.io (trusted publishing): each
+    # crate trusts a GitHub Actions token issued for this repository and
+    # workflow, so no long-lived registry token is stored.
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Authenticate to crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - name: Publish crates
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        shell: bash
+        run: |
+          version="${{ needs.verify.outputs.version }}"
+
+          # Dependency order: a crate can only be published once everything it
+          # depends on is on crates.io. core first, then the domain crates
+          # that only depend on core, then frontend, mcp, and the CLI last.
+          crates=(
+            core
+            aso
+            pricing
+            signing
+            reports
+            frontend
+            mcp
+            cli
+          )
+
+          for crate in "${crates[@]}"; do
+            name="smbcloud-ascapi-${crate}"
+
+            # Skipping versions that are already up makes a re-run after a
+            # partial failure pick up where it stopped: crates.io versions
+            # are immutable, so a second publish would only error.
+            if curl -sSf -H "User-Agent: smbcloudXYZ/smbcloud-ascapi release-workflow" \
+              "https://crates.io/api/v1/crates/${name}/${version}" >/dev/null 2>&1; then
+              echo "${name} ${version} is already on crates.io, skipping"
+              continue
+            fi
+
+            echo "Publishing ${name} ${version}"
+            # cargo waits for the crate to show up in the index before it
+            # returns, so the next crate can resolve this one.
+            cargo publish -p "${name}" --locked
+          done
+
+  dispatch-distributions:
+    name: Trigger distribution workflows
+    needs: [verify, publish]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Trigger GitHub release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'release-github.yml',
+              ref: '${{ needs.verify.outputs.tag }}',
+              inputs: {
+                tag: '${{ needs.verify.outputs.tag }}'
+              }
+            })
+
+      - name: Trigger MCP Registry release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'release-mcp-registry.yml',
+              ref: '${{ needs.verify.outputs.tag }}',
+              inputs: {
+                tag: '${{ needs.verify.outputs.tag }}'
+              }
+            })

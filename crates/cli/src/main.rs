@@ -7,14 +7,18 @@ use smbcloud_ascapi_aso::app_info_localization::{
 use smbcloud_ascapi_aso::app_screenshot_set::{
     AppScreenshotSetCreateAttributes, ScreenshotDisplayType,
 };
-use smbcloud_ascapi_aso::app_store_version::{AppStoreVersionCreateAttributes, Platform};
+use smbcloud_ascapi_aso::app_store_version::{
+    AppStoreVersionCreateAttributes, AppStoreVersionUpdateFields, Platform,
+};
 use smbcloud_ascapi_aso::app_store_version_localization::{
     AppStoreVersionLocalizationCreateAttributes, AppStoreVersionLocalizationFields,
 };
+use smbcloud_ascapi_aso::beta_app_review_detail::BetaAppReviewDetailUpdate;
 use smbcloud_ascapi_aso::build::BuildFilter;
 use smbcloud_ascapi_aso::bundle_id::{BundleIdCreateAttributes, BundleIdPlatform};
 use smbcloud_ascapi_aso::prelude::*;
 use smbcloud_ascapi_core::{ApiKey, Client};
+use smbcloud_ascapi_frontend::await_processing::{await_processing, AwaitConfig};
 use smbcloud_ascapi_frontend::review;
 use smbcloud_ascapi_frontend::upload::{self, upload_package, validate_app, AltoolAuth, AltoolOp};
 use smbcloud_ascapi_pricing::app_price::PriceKind;
@@ -29,6 +33,7 @@ use smbcloud_ascapi_signing::profile::{
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// Add/update App Store Connect app metadata (apps, app infos, app store
 /// versions, and their localizations) from the terminal or a script.
@@ -137,6 +142,173 @@ enum Command {
     SalesReports {
         #[command(subcommand)]
         command: SalesReportsCommand,
+    },
+    /// Manage TestFlight beta testing: groups, review details, and review submissions.
+    Testflight {
+        #[command(subcommand)]
+        command: TestflightCommand,
+    },
+    /// Local signing health checks that compare this machine against App
+    /// Store Connect. macOS only — they read the login keychain.
+    #[cfg(target_os = "macos")]
+    Signing {
+        #[command(subcommand)]
+        command: SigningCommand,
+    },
+}
+
+/// macOS-only signing diagnostics.
+#[cfg(target_os = "macos")]
+#[derive(Subcommand)]
+enum SigningCommand {
+    /// Cross-check the login keychain against Apple's certificates and
+    /// report which of Apple's certificates this machine can actually sign
+    /// with — i.e. which ones have their private key present locally.
+    ///
+    /// Read-only: it lists certificates and inspects the keychain, and
+    /// never writes or transmits key material.
+    Doctor,
+}
+
+#[derive(Subcommand)]
+enum TestflightCommand {
+    /// Manage TestFlight beta groups.
+    Groups {
+        #[command(subcommand)]
+        command: BetaGroupsCommand,
+    },
+    /// Manage the Beta App Review contact details for an app.
+    AppReviewDetail {
+        #[command(subcommand)]
+        command: BetaAppReviewDetailCommand,
+    },
+    /// Manage Beta App Review submissions for a build.
+    AppReviewSubmissions {
+        #[command(subcommand)]
+        command: BetaAppReviewSubmissionsCommand,
+    },
+    /// Manage the per-locale "What to Test" notes testers see on a build.
+    BuildLocalizations {
+        #[command(subcommand)]
+        command: BetaBuildLocalizationsCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum BetaBuildLocalizationsCommand {
+    /// `GET /v1/betaBuildLocalizations?filter[build]={build_id}` — every
+    /// locale's note for a build (find the build with `apps builds`).
+    List {
+        /// The ASC build ID.
+        build_id: String,
+    },
+    /// `POST /v1/betaBuildLocalizations` — add a locale's note to a build.
+    /// A build holds one note per locale; use `update` if the locale already
+    /// has one.
+    Create {
+        /// The ASC build ID.
+        build_id: String,
+        /// BCP 47 locale tag, e.g. `en-US` or `id`.
+        #[arg(long)]
+        locale: String,
+        /// The "What to Test" text (up to 4000 characters).
+        #[arg(long)]
+        whats_new: String,
+    },
+    /// `PATCH /v1/betaBuildLocalizations/{id}` — replace the text of an
+    /// existing note (the id comes from `list`).
+    Update {
+        /// The ASC beta build localization ID.
+        id: String,
+        /// The "What to Test" text (up to 4000 characters).
+        #[arg(long)]
+        whats_new: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum BetaGroupsCommand {
+    /// List all beta groups for an app.
+    List {
+        /// The ASC app ID to list groups for.
+        app_id: String,
+    },
+    /// Fetch a single beta group by its ASC ID.
+    Get {
+        /// The ASC beta group ID.
+        group_id: String,
+    },
+    /// Add one or more builds to a beta group.
+    ///
+    /// Adding a build to an external group may trigger Beta App Review if the
+    /// app has not received approval for that group yet. This command is
+    /// CLI-only for that reason.
+    AddBuild {
+        /// The ASC beta group ID.
+        group_id: String,
+        /// One or more ASC build IDs to add to the group.
+        #[arg(long = "build-id", required = true, num_args = 1..)]
+        build_ids: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum BetaAppReviewDetailCommand {
+    /// Fetch the Beta App Review contact details for an app.
+    Get {
+        /// The ASC app ID.
+        app_id: String,
+    },
+    /// Update the Beta App Review contact and demo-account details for an app.
+    ///
+    /// Only supplied flags are updated; omitted fields are left unchanged.
+    Update {
+        /// The ASC app ID.
+        app_id: String,
+        /// Contact email address for Beta App Review questions.
+        #[arg(long)]
+        contact_email: Option<String>,
+        /// Contact first name.
+        #[arg(long)]
+        contact_first_name: Option<String>,
+        /// Contact last name.
+        #[arg(long)]
+        contact_last_name: Option<String>,
+        /// Contact phone number (international format recommended).
+        #[arg(long)]
+        contact_phone: Option<String>,
+        /// Demo account username (if the app requires login to review).
+        #[arg(long)]
+        demo_account_name: Option<String>,
+        /// Demo account password.
+        #[arg(long)]
+        demo_account_password: Option<String>,
+        /// Whether a demo account is required to review the app.
+        #[arg(long)]
+        demo_account_required: Option<bool>,
+        /// Free-form notes for the reviewer (max 4000 chars).
+        #[arg(long)]
+        notes: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum BetaAppReviewSubmissionsCommand {
+    /// List Beta App Review submissions for a build.
+    List {
+        /// The ASC build ID whose submission record to retrieve.
+        #[arg(long)]
+        build_id: String,
+    },
+    /// Submit a build to Beta App Review.
+    ///
+    /// This is irreversible — it immediately sends the build to Apple's
+    /// review queue. Use `--dry-run` to confirm which build would be submitted
+    /// before committing.
+    Submit {
+        /// The ASC build ID to submit for review.
+        #[arg(long)]
+        build_id: String,
     },
 }
 
@@ -444,6 +616,27 @@ enum AppsCommand {
         #[arg(long)]
         wait: bool,
     },
+    /// Poll `GET /v1/builds?filter[app]={id}` until the newest matching build
+    /// finishes processing (VALID) or fails (INVALID/FAILED), or the timeout
+    /// elapses. This is the signal that confirms an upload or a
+    /// binary-rejection fix worked. Narrow with `--version` /
+    /// `--pre-release-version` when more than one upload is in flight.
+    AwaitProcessing {
+        app_id: String,
+        /// `filter[version]` — the build (upload) number, e.g. `42`.
+        #[arg(long)]
+        version: Option<String>,
+        /// `filter[preReleaseVersion.version]` — the marketing version the
+        /// build sits under, e.g. `1.1.0`.
+        #[arg(long)]
+        pre_release_version: Option<String>,
+        /// Seconds between polls.
+        #[arg(long, default_value_t = 30)]
+        interval: u64,
+        /// Give up after this many seconds without a terminal state.
+        #[arg(long, default_value_t = 30 * 60)]
+        timeout: u64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -481,6 +674,18 @@ enum AppStoreVersionsCommand {
         platform: CliPlatform,
         #[arg(long)]
         version_string: String,
+        #[arg(long)]
+        copyright: Option<String>,
+    },
+    /// `PATCH /v1/appStoreVersions/{id}` — edit a version's own attributes,
+    /// e.g. rename the platform's editable version (`--version-string
+    /// 1.1.0`). The version must be in an editable state. Apple has no
+    /// separate rename action and such a version can't be deleted once a
+    /// build exists, so this is the way to bump its number.
+    Update {
+        id: String,
+        #[arg(long)]
+        version_string: Option<String>,
         #[arg(long)]
         copyright: Option<String>,
     },
@@ -726,6 +931,49 @@ fn dry_run_guard(dry_run: bool, value: &impl serde::Serialize) -> Result<bool> {
     Ok(dry_run)
 }
 
+/// Validate a `--version-string` before sending it. Apple takes one to
+/// three period-separated integers (`1.1` and `1.1.0` are both fine) and
+/// answers anything else with an opaque error, so the shape is checked
+/// here where the message can name the offending flag. Shared by create
+/// and update because both write the same attribute.
+fn validate_version_string(version_string: &str) -> Result<()> {
+    let parts = version_string.split('.').collect::<Vec<_>>();
+    let well_formed = parts.len() <= 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()));
+    if !well_formed {
+        anyhow::bail!(
+            "invalid --version-string `{version_string}`: expected one to three \
+             period-separated numbers, e.g. `1.1.0`"
+        );
+    }
+    Ok(())
+}
+
+/// Maximum length App Store Connect accepts for a "What to Test" note
+/// (`whatsNew` on `betaBuildLocalizations`). Apple's answer for anything
+/// longer is an opaque 400, so the CLI rejects locally and names the
+/// flag in the message.
+const WHATS_NEW_MAX_LEN: usize = 4000;
+
+/// Validate a `--whats-new` text before sending it. App Store Connect caps
+/// the field at [`WHATS_NEW_MAX_LEN`] characters and answers with an opaque
+/// error otherwise, so the length is checked here where the message can
+/// name the offending flag. Shared by `build-localizations create` and
+/// `update` because both write the same attribute, and called before the
+/// dry-run print so `--dry-run` catches the limit too.
+fn validate_whats_new(whats_new: &str) -> Result<()> {
+    let len = whats_new.chars().count();
+    if len > WHATS_NEW_MAX_LEN {
+        anyhow::bail!(
+            "--whats-new is {len} characters; App Store Connect accepts at most \
+             {WHATS_NEW_MAX_LEN}. Shorten the note and try again."
+        );
+    }
+    Ok(())
+}
+
 /// Convert Apple's gzip-compressed TSV report to JSON without normalizing
 /// columns: report layouts vary by report type and Apple can add columns.
 fn sales_report_as_json(gzip: &[u8]) -> Result<Vec<serde_json::Value>> {
@@ -860,6 +1108,23 @@ async fn main() -> Result<()> {
             run_review_submissions(&client, command, cli.dry_run).await
         }
         Command::SalesReports { command } => run_sales_reports(&client, command).await,
+        Command::Testflight { command } => run_testflight(&client, command, cli.dry_run).await,
+        #[cfg(target_os = "macos")]
+        Command::Signing { command } => run_signing(&client, command).await,
+    }
+}
+
+/// macOS-only signing diagnostics. Kept out of MCP: a tool call doesn't
+/// need to inspect the operator's login keychain.
+#[cfg(target_os = "macos")]
+async fn run_signing(client: &Client, command: SigningCommand) -> Result<()> {
+    match command {
+        SigningCommand::Doctor => {
+            let report = smbcloud_ascapi_frontend::run_doctor(client)
+                .await
+                .map_err(|error| anyhow::anyhow!(error))?;
+            print_json(&report)
+        }
     }
 }
 
@@ -902,6 +1167,123 @@ async fn run_sales_reports(client: &Client, command: SalesReportsCommand) -> Res
             }
             Ok(())
         }
+    }
+}
+
+async fn run_testflight(client: &Client, command: TestflightCommand, dry_run: bool) -> Result<()> {
+    match command {
+        TestflightCommand::Groups { command } => match command {
+            BetaGroupsCommand::List { app_id } => {
+                let groups = client.list_beta_groups(&app_id).await?;
+                print_json(&groups)
+            }
+            BetaGroupsCommand::Get { group_id } => {
+                let group = client.get_beta_group(&group_id).await?;
+                print_json(&group)
+            }
+            BetaGroupsCommand::AddBuild {
+                group_id,
+                build_ids,
+            } => {
+                if dry_run {
+                    println!(
+                        "[dry-run] would add {} build(s) to beta group {group_id}: {}",
+                        build_ids.len(),
+                        build_ids.join(", ")
+                    );
+                    return Ok(());
+                }
+                let ids: Vec<&str> = build_ids.iter().map(String::as_str).collect();
+                client.add_builds_to_beta_group(&group_id, &ids).await?;
+                println!("Added {} build(s) to group {group_id}.", build_ids.len());
+                Ok(())
+            }
+        },
+        TestflightCommand::AppReviewDetail { command } => match command {
+            BetaAppReviewDetailCommand::Get { app_id } => {
+                let detail = client.get_beta_app_review_detail(&app_id).await?;
+                print_json(&detail)
+            }
+            BetaAppReviewDetailCommand::Update {
+                app_id,
+                contact_email,
+                contact_first_name,
+                contact_last_name,
+                contact_phone,
+                demo_account_name,
+                demo_account_password,
+                demo_account_required,
+                notes,
+            } => {
+                let update = BetaAppReviewDetailUpdate {
+                    contact_email,
+                    contact_first_name,
+                    contact_last_name,
+                    contact_phone,
+                    demo_account_name,
+                    demo_account_password,
+                    demo_account_required,
+                    notes,
+                };
+                if dry_run {
+                    println!("[dry-run] would update Beta App Review detail for app {app_id}:");
+                    print_json(&update)?;
+                    return Ok(());
+                }
+                let detail = client
+                    .update_beta_app_review_detail(&app_id, update)
+                    .await?;
+                print_json(&detail)
+            }
+        },
+        TestflightCommand::AppReviewSubmissions { command } => match command {
+            BetaAppReviewSubmissionsCommand::List { build_id } => {
+                let submissions = client.list_beta_app_review_submissions(&build_id).await?;
+                print_json(&submissions)
+            }
+            BetaAppReviewSubmissionsCommand::Submit { build_id } => {
+                if dry_run {
+                    println!("[dry-run] would submit build {build_id} to Beta App Review.");
+                    return Ok(());
+                }
+                let submission = client.submit_build_for_beta_review(&build_id).await?;
+                print_json(&submission)
+            }
+        },
+        TestflightCommand::BuildLocalizations { command } => match command {
+            BetaBuildLocalizationsCommand::List { build_id } => {
+                print_json(&client.list_beta_build_localizations(&build_id).await?)
+            }
+            BetaBuildLocalizationsCommand::Create {
+                build_id,
+                locale,
+                whats_new,
+            } => {
+                validate_whats_new(&whats_new)?;
+                if dry_run {
+                    println!(
+                        "[dry-run] would create the {locale} \"What to Test\" note on build {build_id}:"
+                    );
+                    return print_json(&serde_json::json!({ "whatsNew": whats_new }));
+                }
+                let created = client
+                    .create_beta_build_localization(&build_id, &locale, Some(&whats_new))
+                    .await?;
+                print_json(&created)
+            }
+            BetaBuildLocalizationsCommand::Update { id, whats_new } => {
+                validate_whats_new(&whats_new)?;
+                if dry_run {
+                    println!("[dry-run] would update \"What to Test\" note {id}:");
+                    return print_json(&serde_json::json!({ "whatsNew": whats_new }));
+                }
+                print_json(
+                    &client
+                        .update_beta_build_localization(&id, &whats_new)
+                        .await?,
+                )
+            }
+        },
     }
 }
 
@@ -994,6 +1376,40 @@ async fn run_apps(
             }
             Ok(())
         }
+        AppsCommand::AwaitProcessing {
+            app_id,
+            version,
+            pre_release_version,
+            interval,
+            timeout,
+        } => {
+            let filter = BuildFilter {
+                version,
+                pre_release_version,
+                processing_state: None,
+            };
+            let config = AwaitConfig {
+                interval: Duration::from_secs(interval),
+                timeout: Duration::from_secs(timeout),
+            };
+            let outcome = await_processing(client, &app_id, &filter, config)
+                .await
+                .map_err(anyhow::Error::msg)?;
+            print_json(&outcome)?;
+            if outcome.timed_out {
+                anyhow::bail!(
+                    "timed out after {}s waiting for processing",
+                    outcome.waited_secs
+                );
+            }
+            if !outcome.valid {
+                anyhow::bail!(
+                    "build finished processing but is not valid (state: {})",
+                    outcome.processing_state.as_deref().unwrap_or("unknown")
+                );
+            }
+            Ok(())
+        }
     }
 }
 
@@ -1041,6 +1457,7 @@ async fn run_app_store_versions(
             version_string,
             copyright,
         } => {
+            validate_version_string(&version_string)?;
             let attributes = AppStoreVersionCreateAttributes {
                 platform: platform.into(),
                 version_string,
@@ -1050,6 +1467,26 @@ async fn run_app_store_versions(
                 return Ok(());
             }
             print_json(&client.create_app_store_version(&app_id, attributes).await?)
+        }
+        AppStoreVersionsCommand::Update {
+            id,
+            version_string,
+            copyright,
+        } => {
+            if version_string.is_none() && copyright.is_none() {
+                anyhow::bail!("nothing to update: pass --version-string and/or --copyright");
+            }
+            if let Some(version_string) = version_string.as_deref() {
+                validate_version_string(version_string)?;
+            }
+            let fields = AppStoreVersionUpdateFields {
+                version_string,
+                copyright,
+            };
+            if dry_run_guard(dry_run, &fields)? {
+                return Ok(());
+            }
+            print_json(&client.update_app_store_version(&id, fields).await?)
         }
         AppStoreVersionsCommand::Delete { id } => {
             if dry_run {
@@ -1666,6 +2103,9 @@ fn base64_decode(input: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::sales_report_as_json;
+    use super::validate_version_string;
+    use super::validate_whats_new;
+    use super::WHATS_NEW_MAX_LEN;
     use flate2::write::GzEncoder;
     use flate2::Compression;
     use std::io::Write;
@@ -1719,6 +2159,30 @@ mod tests {
     }
 
     #[test]
+    fn version_string_accepts_one_to_three_numbers() {
+        for version_string in ["1", "1.1", "1.1.0", "12.345.6789"] {
+            assert!(
+                validate_version_string(version_string).is_ok(),
+                "{version_string} should be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn version_string_rejects_non_numeric_or_too_many_parts() {
+        for version_string in [
+            "", "1.1.0.0", "1..0", "1.1.", ".1", "v1.1", "1.1-beta", "1,1",
+        ] {
+            let error = validate_version_string(version_string)
+                .expect_err(&format!("{version_string} should be rejected"));
+            assert!(
+                error.to_string().starts_with("invalid --version-string"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
     fn sales_report_disambiguates_blank_and_duplicate_headers() {
         let rows = sales_report_as_json(&gzip("Country\t\tCountry\nUS\t3\tCA\n")).unwrap();
 
@@ -1729,6 +2193,43 @@ mod tests {
                 "column_2": "3",
                 "Country_2": "CA",
             })]
+        );
+    }
+
+    #[test]
+    fn whats_new_accepts_empty_and_up_to_the_limit() {
+        // Apple accepts the field at create time as null/empty, and a
+        // note exactly at the cap is the boundary that must pass.
+        assert!(validate_whats_new("").is_ok());
+        let at_limit = "a".repeat(WHATS_NEW_MAX_LEN);
+        assert!(validate_whats_new(&at_limit).is_ok(), "at-limit must pass");
+    }
+
+    #[test]
+    fn whats_new_rejects_one_char_over_the_limit() {
+        let too_long = "a".repeat(WHATS_NEW_MAX_LEN + 1);
+        let error = validate_whats_new(&too_long).expect_err("over-limit must be rejected");
+        let message = error.to_string();
+        assert!(
+            message.contains("--whats-new"),
+            "should name the flag: {message}"
+        );
+        assert!(
+            message.contains(&WHATS_NEW_MAX_LEN.to_string()),
+            "should quote the limit: {message}"
+        );
+    }
+
+    #[test]
+    fn whats_new_counts_characters_not_bytes() {
+        // "あ" is 3 bytes in UTF-8 but 1 character, so 4000 of them fits
+        // the character-based limit even though it would blow a byte
+        // budget. Make sure the validator agrees with ASC's character
+        // semantics.
+        let multibyte = "あ".repeat(WHATS_NEW_MAX_LEN);
+        assert!(
+            validate_whats_new(&multibyte).is_ok(),
+            "char count, not byte count"
         );
     }
 }

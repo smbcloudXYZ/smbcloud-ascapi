@@ -98,7 +98,7 @@ pub struct AppStoreVersionCreateRequest {
     pub platform: String,
     /// Marketing version string, e.g. 1.2.0.
     pub version_string: String,
-    /// Copyright line, e.g. "2026 Splitfire AB". Optional.
+    /// Copyright line, e.g. "2026 PT Sigit Mitra Bangun". Optional.
     #[serde(default)]
     pub copyright: Option<String>,
 }
@@ -261,4 +261,17 @@ pub struct CertificateCreateRequest {
     /// request itself. Defaults to smbcloud-ascapi.
     #[serde(default)]
     pub common_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct BetaGroupListRequest {
+    /// App Store Connect app id whose beta groups to list.
+    pub app_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct BetaAppReviewDetailGetRequest {
+    /// App Store Connect app id whose beta app review contact detail to
+    /// retrieve.
+    pub app_id: String,
 }
