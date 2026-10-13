@@ -185,6 +185,43 @@ enum TestflightCommand {
         #[command(subcommand)]
         command: BetaAppReviewSubmissionsCommand,
     },
+    /// Manage the per-locale "What to Test" notes testers see on a build.
+    BuildLocalizations {
+        #[command(subcommand)]
+        command: BetaBuildLocalizationsCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum BetaBuildLocalizationsCommand {
+    /// `GET /v1/betaBuildLocalizations?filter[build]={build_id}` — every
+    /// locale's note for a build (find the build with `apps builds`).
+    List {
+        /// The ASC build ID.
+        build_id: String,
+    },
+    /// `POST /v1/betaBuildLocalizations` — add a locale's note to a build.
+    /// A build holds one note per locale; use `update` if the locale already
+    /// has one.
+    Create {
+        /// The ASC build ID.
+        build_id: String,
+        /// BCP 47 locale tag, e.g. `en-US` or `id`.
+        #[arg(long)]
+        locale: String,
+        /// The "What to Test" text (up to 4000 characters).
+        #[arg(long)]
+        whats_new: String,
+    },
+    /// `PATCH /v1/betaBuildLocalizations/{id}` — replace the text of an
+    /// existing note (the id comes from `list`).
+    Update {
+        /// The ASC beta build localization ID.
+        id: String,
+        /// The "What to Test" text (up to 4000 characters).
+        #[arg(long)]
+        whats_new: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -880,6 +917,29 @@ fn dry_run_guard(dry_run: bool, value: &impl serde::Serialize) -> Result<bool> {
     Ok(dry_run)
 }
 
+/// Maximum length App Store Connect accepts for a "What to Test" note
+/// (`whatsNew` on `betaBuildLocalizations`). Apple's answer for anything
+/// longer is an opaque 400, so the CLI rejects locally and names the
+/// flag in the message.
+const WHATS_NEW_MAX_LEN: usize = 4000;
+
+/// Validate a `--whats-new` text before sending it. App Store Connect caps
+/// the field at [`WHATS_NEW_MAX_LEN`] characters and answers with an opaque
+/// error otherwise, so the length is checked here where the message can
+/// name the offending flag. Shared by `build-localizations create` and
+/// `update` because both write the same attribute, and called before the
+/// dry-run print so `--dry-run` catches the limit too.
+fn validate_whats_new(whats_new: &str) -> Result<()> {
+    let len = whats_new.chars().count();
+    if len > WHATS_NEW_MAX_LEN {
+        anyhow::bail!(
+            "--whats-new is {len} characters; App Store Connect accepts at most \
+             {WHATS_NEW_MAX_LEN}. Shorten the note and try again."
+        );
+    }
+    Ok(())
+}
+
 /// Convert Apple's gzip-compressed TSV report to JSON without normalizing
 /// columns: report layouts vary by report type and Apple can add columns.
 fn sales_report_as_json(gzip: &[u8]) -> Result<Vec<serde_json::Value>> {
@@ -1154,6 +1214,40 @@ async fn run_testflight(client: &Client, command: TestflightCommand, dry_run: bo
                 }
                 let submission = client.submit_build_for_beta_review(&build_id).await?;
                 print_json(&submission)
+            }
+        },
+        TestflightCommand::BuildLocalizations { command } => match command {
+            BetaBuildLocalizationsCommand::List { build_id } => {
+                print_json(&client.list_beta_build_localizations(&build_id).await?)
+            }
+            BetaBuildLocalizationsCommand::Create {
+                build_id,
+                locale,
+                whats_new,
+            } => {
+                validate_whats_new(&whats_new)?;
+                if dry_run {
+                    println!(
+                        "[dry-run] would create the {locale} \"What to Test\" note on build {build_id}:"
+                    );
+                    return print_json(&serde_json::json!({ "whatsNew": whats_new }));
+                }
+                let created = client
+                    .create_beta_build_localization(&build_id, &locale, Some(&whats_new))
+                    .await?;
+                print_json(&created)
+            }
+            BetaBuildLocalizationsCommand::Update { id, whats_new } => {
+                validate_whats_new(&whats_new)?;
+                if dry_run {
+                    println!("[dry-run] would update \"What to Test\" note {id}:");
+                    return print_json(&serde_json::json!({ "whatsNew": whats_new }));
+                }
+                print_json(
+                    &client
+                        .update_beta_build_localization(&id, &whats_new)
+                        .await?,
+                )
             }
         },
     }
@@ -1954,6 +2048,8 @@ fn base64_decode(input: &str) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::sales_report_as_json;
+    use super::validate_whats_new;
+    use super::WHATS_NEW_MAX_LEN;
     use flate2::write::GzEncoder;
     use flate2::Compression;
     use std::io::Write;
@@ -2017,6 +2113,43 @@ mod tests {
                 "column_2": "3",
                 "Country_2": "CA",
             })]
+        );
+    }
+
+    #[test]
+    fn whats_new_accepts_empty_and_up_to_the_limit() {
+        // Apple accepts the field at create time as null/empty, and a
+        // note exactly at the cap is the boundary that must pass.
+        assert!(validate_whats_new("").is_ok());
+        let at_limit = "a".repeat(WHATS_NEW_MAX_LEN);
+        assert!(validate_whats_new(&at_limit).is_ok(), "at-limit must pass");
+    }
+
+    #[test]
+    fn whats_new_rejects_one_char_over_the_limit() {
+        let too_long = "a".repeat(WHATS_NEW_MAX_LEN + 1);
+        let error = validate_whats_new(&too_long).expect_err("over-limit must be rejected");
+        let message = error.to_string();
+        assert!(
+            message.contains("--whats-new"),
+            "should name the flag: {message}"
+        );
+        assert!(
+            message.contains(&WHATS_NEW_MAX_LEN.to_string()),
+            "should quote the limit: {message}"
+        );
+    }
+
+    #[test]
+    fn whats_new_counts_characters_not_bytes() {
+        // "あ" is 3 bytes in UTF-8 but 1 character, so 4000 of them fits
+        // the character-based limit even though it would blow a byte
+        // budget. Make sure the validator agrees with ASC's character
+        // semantics.
+        let multibyte = "あ".repeat(WHATS_NEW_MAX_LEN);
+        assert!(
+            validate_whats_new(&multibyte).is_ok(),
+            "char count, not byte count"
         );
     }
 }
