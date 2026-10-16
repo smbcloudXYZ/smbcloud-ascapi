@@ -1,6 +1,7 @@
-//! Read-only lookup for `Build` — the processed artifact behind an uploaded
+//! Lookup for `Build` — the processed artifact behind an uploaded
 //! `.ipa`/`.pkg` — and `PreReleaseVersion`, the version string App Store
-//! Connect groups builds under for TestFlight.
+//! Connect groups builds under for TestFlight. The one write is a build's
+//! export-compliance answer ([`BuildsApi::update_build`]).
 //!
 //! Uploading the binary itself is out of this crate's scope (done via
 //! `xcrun altool`/Xcode); this module exists so a caller can check whether App
@@ -13,7 +14,7 @@
 use async_trait::async_trait;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
-use smbcloud_ascapi_core::jsonapi::{Document, Resource};
+use smbcloud_ascapi_core::jsonapi::{Document, Resource, UpdateBody, UpdateData};
 use smbcloud_ascapi_core::Client;
 use smbcloud_ascapi_core::Result;
 
@@ -30,6 +31,12 @@ pub struct BuildAttributes {
     pub expired: Option<bool>,
     pub processing_state: Option<String>,
     pub min_os_version: Option<String>,
+    /// The build's export-compliance answer. `None` until someone answers it,
+    /// either here or through `ITSAppUsesNonExemptEncryption` in the Info.plist
+    /// of every bundle in the upload. A build with no answer shows "Missing
+    /// Compliance" and App Review rejects its version with
+    /// `STATE_ERROR.ENTITY_STATE_INVALID`.
+    pub uses_non_exempt_encryption: Option<bool>,
 }
 
 pub type Build = Resource<BuildAttributes>;
@@ -42,6 +49,20 @@ pub struct PreReleaseVersionAttributes {
 }
 
 pub type PreReleaseVersion = Resource<PreReleaseVersionAttributes>;
+
+/// The writable attributes of `PATCH /v1/builds/{id}`. Unset fields are left
+/// off the body, so App Store Connect keeps their current value.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildUpdateAttributes {
+    /// `false` answers export compliance with "None of the algorithms
+    /// mentioned above": the app uses no encryption, or only what Apple's
+    /// operating system provides (HTTPS through URLSession or
+    /// Security.framework counts). `true` means non-exempt encryption, which
+    /// then needs an `appEncryptionDeclaration`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uses_non_exempt_encryption: Option<bool>,
+}
 
 /// How to narrow a `list_builds` query. `None` fields are left off the
 /// request, so the default — all fields `None` — lists every build for the
@@ -109,6 +130,10 @@ pub trait BuildsApi {
     /// `GET /v1/builds/{id}` — a single build by its App Store Connect id.
     async fn get_build(&self, id: &str) -> Result<Build>;
 
+    /// `PATCH /v1/builds/{id}` — today, only to answer export compliance on a
+    /// build uploaded without `ITSAppUsesNonExemptEncryption`.
+    async fn update_build(&self, id: &str, attributes: BuildUpdateAttributes) -> Result<Build>;
+
     /// `GET /v1/preReleaseVersions?filter[app]={app_id}`, optionally narrowed
     /// to one platform (the related `/v1/apps/{app_id}/preReleaseVersions`
     /// endpoint does not accept `filter[platform]`). These are the marketing version strings (e.g. `1.1.0`)
@@ -138,6 +163,20 @@ impl BuildsApi for Client {
         let path = format!("/v1/builds/{id}");
         let doc: Document<BuildAttributes> =
             self.request(Method::GET, &path, &[], None::<&()>).await?;
+        Ok(doc.data)
+    }
+
+    async fn update_build(&self, id: &str, attributes: BuildUpdateAttributes) -> Result<Build> {
+        let path = format!("/v1/builds/{id}");
+        let body = UpdateBody {
+            data: UpdateData {
+                resource_type: RESOURCE_TYPE,
+                id: id.to_string(),
+                attributes,
+            },
+        };
+        let doc: Document<BuildAttributes> =
+            self.request(Method::PATCH, &path, &[], Some(&body)).await?;
         Ok(doc.data)
     }
 
@@ -229,7 +268,8 @@ mod tests {
                         "uploadedDate": "2024-01-02T03:04:05Z",
                         "expired": false,
                         "processingState": "VALID",
-                        "minOsVersion": "17.0"
+                        "minOsVersion": "17.0",
+                        "usesNonExemptEncryption": false
                     }
                 }
             ]
@@ -243,6 +283,34 @@ mod tests {
         assert_eq!(build.attributes.version.as_deref(), Some("42"));
         assert_eq!(build.attributes.processing_state.as_deref(), Some("VALID"));
         assert_eq!(build.attributes.expired, Some(false));
+        assert_eq!(build.attributes.uses_non_exempt_encryption, Some(false));
+    }
+
+    #[test]
+    fn update_body_sends_only_the_set_attribute() {
+        let body = UpdateBody {
+            data: UpdateData {
+                resource_type: RESOURCE_TYPE,
+                id: "BUILD1".to_string(),
+                attributes: BuildUpdateAttributes {
+                    uses_non_exempt_encryption: Some(false),
+                },
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&body).unwrap(),
+            serde_json::json!({
+                "data": {
+                    "type": "builds",
+                    "id": "BUILD1",
+                    "attributes": { "usesNonExemptEncryption": false }
+                }
+            }),
+        );
+        assert_eq!(
+            serde_json::to_value(BuildUpdateAttributes::default()).unwrap(),
+            serde_json::json!({}),
+        );
     }
 
     #[test]
