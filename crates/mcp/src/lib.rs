@@ -548,7 +548,7 @@ macro_rules! ascapi_mcp_tools {
                 name = $app_store_version_localization_create_name,
                 title = "Add a version localization",
                 annotations(title = "Add a version localization", read_only_hint = false, destructive_hint = false, idempotent_hint = false),
-                description = "Purpose: add the description, keywords, and release notes for a locale on a specific version. When to use vs siblings: use the update tool when the locale already exists on this version. Behavior: creates the localization with whichever fields are provided and returns it. Prerequisites: ASC_API_KEY, ASC_ISSUER_ID, and a readable .p8 key at ASC_PRIVATE_KEY_PATH or ~/.appstoreconnect/private_keys/AuthKey_<key-id>.p8. Failure modes: missing or unreadable credentials return an invalid-request error naming what is absent; App Store Connect errors are returned verbatim with their status. Limitations: App Store Connect enforces field limits, notably 4000 characters of description, 100 for keywords, and 170 for promotional text, and rejects longer values outright."
+                description = "Purpose: add the description, keywords, and release notes for a locale on a specific version. When to use vs siblings: use the update tool when the locale already exists on this version. Behavior: creates the localization with whichever fields are provided and returns it. Prerequisites: ASC_API_KEY, ASC_ISSUER_ID, and a readable .p8 key at ASC_PRIVATE_KEY_PATH or ~/.appstoreconnect/private_keys/AuthKey_<key-id>.p8. Failure modes: missing or unreadable credentials return an invalid-request error naming what is absent; App Store Connect errors are returned verbatim with their status. Limitations: field limits are checked before sending (4000 characters for description and release notes, 100 for keywords, 170 for promotional text), and a value over its limit returns an invalid-params error naming the field."
             )]
             async fn app_store_version_localization_create(
                 &self,
@@ -568,6 +568,9 @@ macro_rules! ascapi_mcp_tools {
                     support_url: request.support_url,
                     whats_new: request.whats_new,
                 };
+                fields
+                    .validate()
+                    .map_err(|message| ::rmcp::model::ErrorData::invalid_params(message, None))?;
                 let attributes = ::smbcloud_ascapi_aso::app_store_version_localization::AppStoreVersionLocalizationCreateAttributes {
                     locale: request.locale,
                     fields,
@@ -585,7 +588,7 @@ macro_rules! ascapi_mcp_tools {
                 name = $app_store_version_localization_update_name,
                 title = "Edit a version localization",
                 annotations(title = "Edit a version localization", read_only_hint = false, destructive_hint = false, idempotent_hint = true),
-                description = "Purpose: change the description, keywords, promotional text, or release notes for an existing locale on a version. When to use vs siblings: promotional text is the one field editable without shipping a new build, which makes this the tool for timely copy changes. Behavior: sends only the fields provided and leaves the rest untouched. Prerequisites: ASC_API_KEY, ASC_ISSUER_ID, and a readable .p8 key at ASC_PRIVATE_KEY_PATH or ~/.appstoreconnect/private_keys/AuthKey_<key-id>.p8. Failure modes: missing or unreadable credentials return an invalid-request error naming what is absent; App Store Connect errors are returned verbatim with their status. Limitations: which fields are editable depends on the version's review state, and Apple rejects edits to a version under review."
+                description = "Purpose: change the description, keywords, promotional text, or release notes for an existing locale on a version. When to use vs siblings: promotional text is the one field editable without shipping a new build, which makes this the tool for timely copy changes. Behavior: sends only the fields provided and leaves the rest untouched. Prerequisites: ASC_API_KEY, ASC_ISSUER_ID, and a readable .p8 key at ASC_PRIVATE_KEY_PATH or ~/.appstoreconnect/private_keys/AuthKey_<key-id>.p8. Failure modes: missing or unreadable credentials return an invalid-request error naming what is absent; App Store Connect errors are returned verbatim with their status. Limitations: field limits are checked before sending (4000 characters for description and release notes, 100 for keywords, 170 for promotional text) and a value over its limit returns an invalid-params error naming the field; which fields are editable depends on the version's review state, and Apple rejects edits to a version under review."
             )]
             async fn app_store_version_localization_update(
                 &self,
@@ -605,6 +608,9 @@ macro_rules! ascapi_mcp_tools {
                     support_url: request.support_url,
                     whats_new: request.whats_new,
                 };
+                fields
+                    .validate()
+                    .map_err(|message| ::rmcp::model::ErrorData::invalid_params(message, None))?;
                 let value = client
                     .update_app_store_version_localization(&request.id, fields)
                     .await
