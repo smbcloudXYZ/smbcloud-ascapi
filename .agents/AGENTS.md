@@ -50,6 +50,12 @@ asc apps builds <APP_ID> \
 # GET /v1/builds/{id} — a single build by its ASC id.
 asc apps build <BUILD_ID>
 
+# PATCH /v1/builds/{id} usesNonExemptEncryption — answer export compliance on a
+# build showing "Missing Compliance". Without an answer, review-submissions
+# submit fails with 409 STATE_ERROR.ENTITY_STATE_INVALID. false = "None of the
+# algorithms mentioned above" (HTTPS through Apple's OS only).
+asc apps set-encryption <BUILD_ID> --uses-non-exempt-encryption false
+
 # GET /v1/preReleaseVersions?filter[app]={id} — the marketing version strings
 # TestFlight groups builds under.
 asc apps pre-release-versions <APP_ID> [--platform <ios|mac-os|tv-os|vision-os>]

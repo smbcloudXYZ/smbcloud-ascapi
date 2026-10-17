@@ -209,6 +209,7 @@ mod tests {
                 expired: Some(false),
                 processing_state: state.map(str::to_string),
                 min_os_version: Some("17.0".to_string()),
+                uses_non_exempt_encryption: None,
             },
             relationships: None,
         }

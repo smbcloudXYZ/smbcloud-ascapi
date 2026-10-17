@@ -15,7 +15,7 @@ use smbcloud_ascapi_aso::app_store_version_localization::{
     AppStoreVersionLocalizationFields,
 };
 use smbcloud_ascapi_aso::beta_app_review_detail::BetaAppReviewDetailUpdate;
-use smbcloud_ascapi_aso::build::BuildFilter;
+use smbcloud_ascapi_aso::build::{BuildFilter, BuildUpdateAttributes};
 use smbcloud_ascapi_aso::bundle_id::{BundleIdCreateAttributes, BundleIdPlatform};
 use smbcloud_ascapi_aso::prelude::*;
 use smbcloud_ascapi_core::{ApiKey, Client};
@@ -602,6 +602,19 @@ enum AppsCommand {
     },
     /// `GET /v1/builds/{id}` — a single build by its App Store Connect id.
     Build { id: String },
+    /// `PATCH /v1/builds/{id}` `usesNonExemptEncryption` — answer export
+    /// compliance for a build that shows "Missing Compliance" (it was uploaded
+    /// without `ITSAppUsesNonExemptEncryption` in every bundle's Info.plist).
+    /// App Review rejects a version whose build has no answer.
+    SetEncryption {
+        /// The build's App Store Connect id (from `apps builds`), not its build number.
+        build_id: String,
+        /// `false`: no encryption beyond what Apple's OS provides (HTTPS via
+        /// URLSession or Security.framework counts), i.e. "None of the
+        /// algorithms mentioned above". `true`: non-exempt encryption.
+        #[arg(long, action = clap::ArgAction::Set)]
+        uses_non_exempt_encryption: bool,
+    },
     /// `GET /v1/preReleaseVersions?filter[app]={id}` — the marketing version strings
     /// (e.g. `1.1.0`) TestFlight groups builds under.
     PreReleaseVersions {
@@ -1492,6 +1505,18 @@ async fn run_apps(
             print_json(&client.list_builds(&app_id, &filter).await?)
         }
         AppsCommand::Build { id } => print_json(&client.get_build(&id).await?),
+        AppsCommand::SetEncryption {
+            build_id,
+            uses_non_exempt_encryption,
+        } => {
+            let attributes = BuildUpdateAttributes {
+                uses_non_exempt_encryption: Some(uses_non_exempt_encryption),
+            };
+            if dry_run_guard(dry_run, &attributes)? {
+                return Ok(());
+            }
+            print_json(&client.update_build(&build_id, attributes).await?)
+        }
         AppsCommand::PreReleaseVersions { app_id, platform } => {
             let platform = platform.map(Platform::from);
             print_json(&client.list_pre_release_versions(&app_id, platform).await?)
