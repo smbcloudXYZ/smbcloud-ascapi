@@ -197,6 +197,16 @@ The shortest path from a signed `.pkg` to a TestFlight group:
 ## Review submissions (CLI)
 
 ```sh
+# GET /v1/appStoreVersions/{id}/build — the build attached to a version, or
+# null (with "no build attached" on stderr). Run it before submitting.
+asc app-store-versions build <APP_STORE_VERSION_ID>
+
+# PATCH the version's build relationship, then read the build back and fail if
+# it isn't the one requested. Prints the build's id, version, processingState
+# and usesNonExemptEncryption. --no-verify skips the read-back; --dry-run
+# stays offline.
+asc app-store-versions set-build <APP_STORE_VERSION_ID> --build-id <BUILD_ID> [--no-verify]
+
 # GET /v1/reviewSubmissions?filter[app]={id}
 asc review-submissions list <APP_ID> [--platform <...>] [--state READY_FOR_REVIEW]
 

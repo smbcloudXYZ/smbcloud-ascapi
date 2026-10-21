@@ -51,6 +51,7 @@ macro_rules! ascapi_mcp_tools {
         $app_store_version_create_name:literal,
         $app_store_version_delete_name:literal,
         $app_store_version_set_build_name:literal,
+        $app_store_version_build_get_name:literal,
         $app_info_localization_list_name:literal,
         $app_info_localization_create_name:literal,
         $app_info_localization_update_name:literal,
@@ -305,7 +306,7 @@ macro_rules! ascapi_mcp_tools {
                 name = $app_store_version_get_name,
                 title = "Get one app store version",
                 annotations(title = "Get one app store version", read_only_hint = true, idempotent_hint = true),
-                description = "Purpose: fetch one App Store Version's attributes by id. When to use vs siblings: use app_store_version_list when you have an app id rather than a version id. Behavior: returns the single version resource with its platform, version string, and release state. Prerequisites: ASC_API_KEY, ASC_ISSUER_ID, and a readable .p8 key at ASC_PRIVATE_KEY_PATH or ~/.appstoreconnect/private_keys/AuthKey_<key-id>.p8. Failure modes: missing or unreadable credentials return an invalid-request error naming what is absent; App Store Connect errors are returned verbatim with their status. Limitations: attributes only; its localizations and attached build are fetched with their own tools."
+                description = "Purpose: fetch one App Store Version's attributes by id. When to use vs siblings: use app_store_version_list when you have an app id rather than a version id. Behavior: returns the single version resource with its platform, version string, and release state. Prerequisites: ASC_API_KEY, ASC_ISSUER_ID, and a readable .p8 key at ASC_PRIVATE_KEY_PATH or ~/.appstoreconnect/private_keys/AuthKey_<key-id>.p8. Failure modes: missing or unreadable credentials return an invalid-request error naming what is absent; App Store Connect errors are returned verbatim with their status. Limitations: attributes only; its localizations are fetched with their own tools, and its attached build with app_store_version_build_get."
             )]
             async fn app_store_version_get(
                 &self,
@@ -387,7 +388,7 @@ macro_rules! ascapi_mcp_tools {
                 name = $app_store_version_set_build_name,
                 title = "Attach a build to a version",
                 annotations(title = "Attach a build to a version", read_only_hint = false, destructive_hint = false, idempotent_hint = true),
-                description = "Purpose: attach an uploaded build to an App Store Version, which a version needs before it can be submitted. When to use vs siblings: get the build id from build_list and the version id from app_store_version_list. Behavior: points the version's build relationship at the given build, replacing whatever was attached. Prerequisites: ASC_API_KEY, ASC_ISSUER_ID, and a readable .p8 key at ASC_PRIVATE_KEY_PATH or ~/.appstoreconnect/private_keys/AuthKey_<key-id>.p8. Failure modes: missing or unreadable credentials return an invalid-request error naming what is absent; App Store Connect errors are returned verbatim with their status. Limitations: the build must have finished processing, and its platform must match the version's; Apple rejects the pairing otherwise."
+                description = "Purpose: attach an uploaded build to an App Store Version, which a version needs before it can be submitted. When to use vs siblings: get the build id from build_list and the version id from app_store_version_list. Behavior: points the version's build relationship at the given build, replacing whatever was attached, then reads the build back and fails if the version does not report it; returns the version id and the attached build with its version, processing state, and export-compliance answer. Prerequisites: ASC_API_KEY, ASC_ISSUER_ID, and a readable .p8 key at ASC_PRIVATE_KEY_PATH or ~/.appstoreconnect/private_keys/AuthKey_<key-id>.p8. Failure modes: missing or unreadable credentials return an invalid-request error naming what is absent; App Store Connect errors are returned verbatim with their status. Limitations: the build must have finished processing, and its platform must match the version's; Apple rejects the pairing otherwise."
             )]
             async fn app_store_version_set_build(
                 &self,
@@ -399,12 +400,41 @@ macro_rules! ascapi_mcp_tools {
                 use ::smbcloud_ascapi_signing::prelude::*;
                 let client = Self::client()?;
                 let request = parameters.0;
-                client
-                    .set_app_store_version_build(&request.version_id, &request.build_id)
+                let attached = ::smbcloud_ascapi_frontend::attach_build(
+                    &client,
+                    &request.version_id,
+                    &request.build_id,
+                    true,
+                )
+                .await
+                .map_err(|error| ::rmcp::model::ErrorData::internal_error(error, None))?;
+                Ok(::rmcp::model::CallToolResult::success(vec![
+                    ::rmcp::model::ContentBlock::json(&attached)?,
+                ]))
+            }
+
+            #[::rmcp::tool(
+                name = $app_store_version_build_get_name,
+                title = "Get the build attached to a version",
+                annotations(title = "Get the build attached to a version", read_only_hint = true, idempotent_hint = true),
+                description = "Purpose: read which build is attached to an App Store Version, so it can be checked before the version is submitted for review. When to use vs siblings: app_store_version_get returns the version without its build; use this after app_store_version_set_build or before review_submission_submit. Behavior: returns the attached build with its id, version string, processing state, and export-compliance answer, or null when no build is attached. Prerequisites: ASC_API_KEY, ASC_ISSUER_ID, and a readable .p8 key at ASC_PRIVATE_KEY_PATH or ~/.appstoreconnect/private_keys/AuthKey_<key-id>.p8. Failure modes: missing or unreadable credentials return an invalid-request error naming what is absent; App Store Connect errors are returned verbatim with their status. Limitations: reports only the current attachment, not earlier builds; use build_list for the builds uploaded for an app."
+            )]
+            async fn app_store_version_build_get(
+                &self,
+                parameters: ::rmcp::handler::server::wrapper::Parameters<$crate::IdRequest>,
+            ) -> ::std::result::Result<::rmcp::model::CallToolResult, ::rmcp::model::ErrorData> {
+                #[allow(unused_imports)]
+                use ::smbcloud_ascapi_aso::prelude::*;
+                #[allow(unused_imports)]
+                use ::smbcloud_ascapi_signing::prelude::*;
+                let client = Self::client()?;
+                let request = parameters.0;
+                let value = client
+                    .get_app_store_version_build(&request.id)
                     .await
                     .map_err(|error| ::rmcp::model::ErrorData::internal_error(error.to_string(), None))?;
                 Ok(::rmcp::model::CallToolResult::success(vec![
-                    ::rmcp::model::ContentBlock::json(&::serde_json::json!({ "versionId": request.version_id, "buildId": request.build_id }))?,
+                    ::rmcp::model::ContentBlock::json(&value)?,
                 ]))
             }
 
