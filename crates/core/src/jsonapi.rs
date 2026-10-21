@@ -11,6 +11,14 @@ pub struct Document<A> {
     pub data: Resource<A>,
 }
 
+/// A single-resource document whose `data` may be `null`, as Apple returns
+/// for a to-one related resource that isn't set, e.g. `GET
+/// /v1/appStoreVersions/{id}/build` on a version with no build attached.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OptionalDocument<A> {
+    pub data: Option<Resource<A>>,
+}
+
 /// A resource-collection JSON:API document — the body of e.g. `GET
 /// /v1/apps`.
 ///

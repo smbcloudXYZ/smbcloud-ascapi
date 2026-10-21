@@ -50,6 +50,12 @@ asc apps builds <APP_ID> \
 # GET /v1/builds/{id} — a single build by its ASC id.
 asc apps build <BUILD_ID>
 
+# PATCH /v1/builds/{id} usesNonExemptEncryption — answer export compliance on a
+# build showing "Missing Compliance". Without an answer, review-submissions
+# submit fails with 409 STATE_ERROR.ENTITY_STATE_INVALID. false = "None of the
+# algorithms mentioned above" (HTTPS through Apple's OS only).
+asc apps set-encryption <BUILD_ID> --uses-non-exempt-encryption false
+
 # GET /v1/preReleaseVersions?filter[app]={id} — the marketing version strings
 # TestFlight groups builds under.
 asc apps pre-release-versions <APP_ID> [--platform <ios|mac-os|tv-os|vision-os>]
@@ -104,6 +110,23 @@ Intra-doc links are load-bearing (a broken one fails CI), and the CSR tests
 shell out to `openssl`, whose output differs between OpenSSL 3 and macOS
 LibreSSL.
 
+## Verify before relying on a freshly built `asc`
+
+The released/installed `asc` binary can silently lag `development`. This
+hides because `asc apps upload` only shells out to `xcrun altool` and
+doesn't touch newer code paths, so an upload succeeds against a stale
+binary that lacks e.g. the `testflight` subcommand. Before relying on a
+newly-added command, rebuild from `development`:
+
+```sh
+cargo build --release
+# or, to be sure you're on the current branch's binary:
+cargo install --path crates/cli --locked
+```
+
+`unrecognized subcommand` on a command that's been merged is the symptom;
+the cure is a rebuild, not a workaround.
+
 ## Architecture notes
 
 - Layering is `core` → `aso`/`pricing`/`signing`/`reports` → `frontend` →
@@ -132,9 +155,58 @@ The CLI needs an ASC API key: `--key-id`/`ASC_API_KEY`,
 `~/.appstoreconnect/private_keys/AuthKey_<key-id>.p8`). `--mcp` resolves
 credentials per tool call, so the server can list tools unconfigured.
 
+### App Store Connect key location
+
+`ascapi` itself defaults to `~/.appstoreconnect/private_keys/AuthKey_<key-id>.p8`.
+Some sibling repos use a different default and can drift when two copies of
+the same key id are on disk:
+
+- `onde-store/scripts/build-ios.sh` and `smbcloud-browser/scripts/build-ios.sh`
+  default to `~/private_keys/AuthKey_<id>.p8`.
+
+A stale `AuthKey_<id>.p8` with the same id surfaces as an indistinguishable
+401 on ASC API calls — ASC says "valid key id, signature doesn't verify."
+`ascapi apps upload` dodges the half of the drift that goes through altool
+by passing `--p8-file-path` explicitly (so altool can't search for a stale
+key). For every other command the resolution rule is the one above; if a
+401 appears where it shouldn't, the first thing to check is which `.p8`
+both sides are actually reading. If you need the scripts to use a single
+key file, set `ASC_PRIVATE_KEY_PATH` explicitly in the environment
+instead of relying on either default.
+
+## Finish-the-release recipe (TestFlight)
+
+The shortest path from a signed `.pkg` to a TestFlight group:
+
+1. **Upload:** `asc apps upload <PKG> --wait` (always passes
+   `--p8-file-path`; never call `altool` by hand — its key search can pick a
+   stale `AuthKey_<id>.p8` and fail with a 401).
+2. **Poll to VALID:** `asc apps builds <APP_ID> --version <BUILD_NUMBER>`
+   until `processingState` is `VALID`, then read the build id off the
+   response. (`asc apps await-processing` is the non-blocking alternative
+   to `--wait` if you're driving this from CI.)
+3. **Beta-review contact details** (one-time per app):
+   `asc testflight app-review-detail update ...`.
+4. **Submit:** find the Public Link group with
+   `asc testflight groups list <APP_ID>`, then either
+   `groups add-build --build-id <BUILD_ID> <GROUP_ID>` or
+   `app-review-submissions submit <BUILD_ID>`. Both are CLI-only — adding
+   to an external group / submitting to Beta App Review can trigger review,
+   which an MCP tool call shouldn't do unattended.
+
 ## Review submissions (CLI)
 
 ```sh
+# GET /v1/appStoreVersions/{id}/build — the build attached to a version, or
+# null (with "no build attached" on stderr). Run it before submitting.
+asc app-store-versions build <APP_STORE_VERSION_ID>
+
+# PATCH the version's build relationship, then read the build back and fail if
+# it isn't the one requested. Prints the build's id, version, processingState
+# and usesNonExemptEncryption. --no-verify skips the read-back; --dry-run
+# stays offline.
+asc app-store-versions set-build <APP_STORE_VERSION_ID> --build-id <BUILD_ID> [--no-verify]
+
 # GET /v1/reviewSubmissions?filter[app]={id}
 asc review-submissions list <APP_ID> [--platform <...>] [--state READY_FOR_REVIEW]
 

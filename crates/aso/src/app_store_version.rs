@@ -9,11 +9,13 @@ use async_trait::async_trait;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use smbcloud_ascapi_core::jsonapi::{
-    CreateBody, CreateData, Document, Resource, ResourceId, ToOne, UpdateBody, UpdateData,
-    UpdateRelationshipsBody, UpdateRelationshipsData,
+    CreateBody, CreateData, Document, OptionalDocument, Resource, ResourceId, ToOne, UpdateBody,
+    UpdateData, UpdateRelationshipsBody, UpdateRelationshipsData,
 };
 use smbcloud_ascapi_core::Client;
 use smbcloud_ascapi_core::Result;
+
+use crate::build::{Build, BuildAttributes};
 
 pub const RESOURCE_TYPE: &str = "appStoreVersions";
 
@@ -132,6 +134,12 @@ pub trait AppStoreVersionsApi {
         id: &str,
         build_id: &str,
     ) -> Result<AppStoreVersion>;
+
+    /// `GET /v1/appStoreVersions/{id}/build` — the build currently attached
+    /// to this version, or `None` when there isn't one. The version resource
+    /// itself only carries a link to it, so this is how to confirm what a
+    /// submission would send.
+    async fn get_app_store_version_build(&self, id: &str) -> Result<Option<Build>>;
 }
 
 #[async_trait]
@@ -230,6 +238,13 @@ impl AppStoreVersionsApi for Client {
             self.request(Method::PATCH, &path, &[], Some(&body)).await?;
         Ok(doc.data)
     }
+
+    async fn get_app_store_version_build(&self, id: &str) -> Result<Option<Build>> {
+        let path = format!("/v1/appStoreVersions/{id}/build");
+        let doc: OptionalDocument<BuildAttributes> =
+            self.request(Method::GET, &path, &[], None::<&()>).await?;
+        Ok(doc.data)
+    }
 }
 
 /// The `relationships` payload for pointing an App Store Version at a
@@ -293,5 +308,35 @@ mod tests {
             doc.data.attributes.app_version_state.as_deref(),
             Some("PREPARE_FOR_SUBMISSION")
         );
+    }
+
+    /// Apple answers `{"data": null}` for a version with no build attached;
+    /// that has to parse as "none", not as an error.
+    #[test]
+    fn a_null_build_body_parses_to_none() {
+        let doc: OptionalDocument<BuildAttributes> =
+            serde_json::from_value(json!({ "data": null })).unwrap();
+        assert!(doc.data.is_none());
+    }
+
+    #[test]
+    fn a_populated_build_body_parses_with_its_version() {
+        let doc: OptionalDocument<BuildAttributes> = serde_json::from_value(json!({
+            "data": {
+                "id": "build-1",
+                "type": "builds",
+                "attributes": {
+                    "version": "42",
+                    "processingState": "VALID",
+                    "usesNonExemptEncryption": false
+                }
+            }
+        }))
+        .unwrap();
+
+        let build = doc.data.unwrap();
+        assert_eq!(build.id, "build-1");
+        assert_eq!(build.attributes.version.as_deref(), Some("42"));
+        assert_eq!(build.attributes.uses_non_exempt_encryption, Some(false));
     }
 }

@@ -11,13 +11,15 @@ use smbcloud_ascapi_aso::app_store_version::{
     AppStoreVersionCreateAttributes, AppStoreVersionUpdateFields, Platform,
 };
 use smbcloud_ascapi_aso::app_store_version_localization::{
-    AppStoreVersionLocalizationCreateAttributes, AppStoreVersionLocalizationFields,
+    AppStoreVersionLocalizationAttributes, AppStoreVersionLocalizationCreateAttributes,
+    AppStoreVersionLocalizationFields,
 };
 use smbcloud_ascapi_aso::beta_app_review_detail::BetaAppReviewDetailUpdate;
-use smbcloud_ascapi_aso::build::BuildFilter;
+use smbcloud_ascapi_aso::build::{BuildFilter, BuildUpdateAttributes};
 use smbcloud_ascapi_aso::bundle_id::{BundleIdCreateAttributes, BundleIdPlatform};
 use smbcloud_ascapi_aso::prelude::*;
 use smbcloud_ascapi_core::{ApiKey, Client};
+use smbcloud_ascapi_frontend::attach_build::attach_build;
 use smbcloud_ascapi_frontend::await_processing::{await_processing, AwaitConfig};
 use smbcloud_ascapi_frontend::review;
 use smbcloud_ascapi_frontend::upload::{self, upload_package, validate_app, AltoolAuth, AltoolOp};
@@ -205,6 +207,7 @@ enum BetaBuildLocalizationsCommand {
     /// `POST /v1/betaBuildLocalizations` — add a locale's note to a build.
     /// A build holds one note per locale; use `update` if the locale already
     /// has one.
+    #[command(group(clap::ArgGroup::new("text").required(true).args(["whats_new", "whats_new_file"])))]
     Create {
         /// The ASC build ID.
         build_id: String,
@@ -213,16 +216,25 @@ enum BetaBuildLocalizationsCommand {
         locale: String,
         /// The "What to Test" text (up to 4000 characters).
         #[arg(long)]
-        whats_new: String,
+        whats_new: Option<String>,
+        /// Read the "What to Test" text from a UTF-8 file instead of
+        /// `--whats-new`; one trailing newline is dropped.
+        #[arg(long)]
+        whats_new_file: Option<PathBuf>,
     },
     /// `PATCH /v1/betaBuildLocalizations/{id}` — replace the text of an
     /// existing note (the id comes from `list`).
+    #[command(group(clap::ArgGroup::new("text").required(true).args(["whats_new", "whats_new_file"])))]
     Update {
         /// The ASC beta build localization ID.
         id: String,
         /// The "What to Test" text (up to 4000 characters).
         #[arg(long)]
-        whats_new: String,
+        whats_new: Option<String>,
+        /// Read the "What to Test" text from a UTF-8 file instead of
+        /// `--whats-new`; one trailing newline is dropped.
+        #[arg(long)]
+        whats_new_file: Option<PathBuf>,
     },
 }
 
@@ -591,6 +603,19 @@ enum AppsCommand {
     },
     /// `GET /v1/builds/{id}` — a single build by its App Store Connect id.
     Build { id: String },
+    /// `PATCH /v1/builds/{id}` `usesNonExemptEncryption` — answer export
+    /// compliance for a build that shows "Missing Compliance" (it was uploaded
+    /// without `ITSAppUsesNonExemptEncryption` in every bundle's Info.plist).
+    /// App Review rejects a version whose build has no answer.
+    SetEncryption {
+        /// The build's App Store Connect id (from `apps builds`), not its build number.
+        build_id: String,
+        /// `false`: no encryption beyond what Apple's OS provides (HTTPS via
+        /// URLSession or Security.framework counts), i.e. "None of the
+        /// algorithms mentioned above". `true`: non-exempt encryption.
+        #[arg(long, action = clap::ArgAction::Set)]
+        uses_non_exempt_encryption: bool,
+    },
     /// `GET /v1/preReleaseVersions?filter[app]={id}` — the marketing version strings
     /// (e.g. `1.1.0`) TestFlight groups builds under.
     PreReleaseVersions {
@@ -698,7 +723,14 @@ enum AppStoreVersionsCommand {
         id: String,
         #[arg(long)]
         build_id: String,
+        /// Skip the read-back check that the version now reports this build.
+        #[arg(long)]
+        no_verify: bool,
     },
+    /// `GET /v1/appStoreVersions/{id}/build` — the build attached to this
+    /// version, or `null` when there is none. Read-only; run it before
+    /// `review-submissions submit`.
+    Build { id: String },
 }
 
 #[derive(Subcommand)]
@@ -719,7 +751,8 @@ enum ReviewSubmissionsCommand {
     Submit {
         app_id: String,
         /// The App Store Version to submit (see `app-store-versions list`).
-        /// It needs a build attached (`app-store-versions set-build`).
+        /// It needs a build attached (`app-store-versions set-build`;
+        /// check with `app-store-versions build`).
         #[arg(long)]
         version_id: String,
     },
@@ -765,31 +798,63 @@ enum AppStoreVersionLocalizationsCommand {
         locale: String,
         #[arg(long)]
         description: Option<String>,
+        /// Read `description` from a UTF-8 file; one trailing newline is dropped.
+        #[arg(long, conflicts_with = "description")]
+        description_file: Option<PathBuf>,
         #[arg(long)]
         keywords: Option<String>,
+        /// Read `keywords` from a UTF-8 file; one trailing newline is dropped.
+        #[arg(long, conflicts_with = "keywords")]
+        keywords_file: Option<PathBuf>,
         #[arg(long)]
         whats_new: Option<String>,
+        /// Read `whatsNew` from a UTF-8 file; one trailing newline is dropped.
+        #[arg(long, conflicts_with = "whats_new")]
+        whats_new_file: Option<PathBuf>,
         #[arg(long)]
         promotional_text: Option<String>,
+        /// Read `promotionalText` from a UTF-8 file; one trailing newline is dropped.
+        #[arg(long, conflicts_with = "promotional_text")]
+        promotional_text_file: Option<PathBuf>,
         #[arg(long)]
         marketing_url: Option<String>,
         #[arg(long)]
         support_url: Option<String>,
+        /// Skip the read-back check that compares the stored values with
+        /// what was sent.
+        #[arg(long)]
+        no_verify: bool,
     },
     Update {
         id: String,
         #[arg(long)]
         description: Option<String>,
+        /// Read `description` from a UTF-8 file; one trailing newline is dropped.
+        #[arg(long, conflicts_with = "description")]
+        description_file: Option<PathBuf>,
         #[arg(long)]
         keywords: Option<String>,
+        /// Read `keywords` from a UTF-8 file; one trailing newline is dropped.
+        #[arg(long, conflicts_with = "keywords")]
+        keywords_file: Option<PathBuf>,
         #[arg(long)]
         whats_new: Option<String>,
+        /// Read `whatsNew` from a UTF-8 file; one trailing newline is dropped.
+        #[arg(long, conflicts_with = "whats_new")]
+        whats_new_file: Option<PathBuf>,
         #[arg(long)]
         promotional_text: Option<String>,
+        /// Read `promotionalText` from a UTF-8 file; one trailing newline is dropped.
+        #[arg(long, conflicts_with = "promotional_text")]
+        promotional_text_file: Option<PathBuf>,
         #[arg(long)]
         marketing_url: Option<String>,
         #[arg(long)]
         support_url: Option<String>,
+        /// Skip the read-back check that compares the stored values with
+        /// what was sent.
+        #[arg(long)]
+        no_verify: bool,
     },
     Delete {
         id: String,
@@ -931,6 +996,123 @@ fn dry_run_guard(dry_run: bool, value: &impl serde::Serialize) -> Result<bool> {
     Ok(dry_run)
 }
 
+/// Resolve a text option given either inline or as a file. The file is read
+/// as UTF-8 and one trailing newline (`\n` or `\r\n`) is dropped, the way
+/// `$(cat file)` does, so file-backed and inline values behave the same.
+fn text_arg(inline: Option<String>, file: Option<PathBuf>, flag: &str) -> Result<Option<String>> {
+    let Some(path) = file else {
+        return Ok(inline);
+    };
+    let mut text = std::fs::read_to_string(&path)
+        .with_context(|| format!("{flag}: cannot read {} as UTF-8 text", path.display()))?;
+    if text.ends_with('\n') {
+        text.pop();
+        if text.ends_with('\r') {
+            text.pop();
+        }
+    }
+    Ok(Some(text))
+}
+
+/// Run the shared length lint: warnings go to stderr, a violation aborts
+/// with the field's message rewritten to name the CLI flag.
+fn lint_localization_fields(fields: &AppStoreVersionLocalizationFields) -> Result<()> {
+    match fields.validate() {
+        Ok(warnings) => {
+            for warning in warnings {
+                eprintln!("warning: {warning}");
+            }
+            Ok(())
+        }
+        Err(message) => {
+            let (field, rest) = message.split_once(' ').unwrap_or((&message, ""));
+            let mut flag = String::from("--");
+            for c in field.chars() {
+                if c.is_ascii_uppercase() {
+                    flag.push('-');
+                    flag.push(c.to_ascii_lowercase());
+                } else {
+                    flag.push(c);
+                }
+            }
+            anyhow::bail!("{flag} {rest}. Shorten the text and try again.")
+        }
+    }
+}
+
+/// Names of the fields in `sent` whose stored value is not an exact match,
+/// with the index of the first differing character (a missing value counts
+/// as the empty string).
+fn diff_fields(
+    sent: &AppStoreVersionLocalizationFields,
+    stored: &AppStoreVersionLocalizationAttributes,
+) -> Vec<&'static str> {
+    [
+        ("description", &sent.description, &stored.description),
+        ("keywords", &sent.keywords, &stored.keywords),
+        ("marketingUrl", &sent.marketing_url, &stored.marketing_url),
+        (
+            "promotionalText",
+            &sent.promotional_text,
+            &stored.promotional_text,
+        ),
+        ("supportUrl", &sent.support_url, &stored.support_url),
+        ("whatsNew", &sent.whats_new, &stored.whats_new),
+    ]
+    .into_iter()
+    .filter(|(_, sent, stored)| match sent {
+        Some(sent) => stored.as_deref() != Some(sent.as_str()),
+        None => false,
+    })
+    .map(|(name, _, _)| name)
+    .collect()
+}
+
+fn first_diff_index(a: &str, b: &str) -> usize {
+    a.chars()
+        .zip(b.chars())
+        .position(|(x, y)| x != y)
+        .unwrap_or_else(|| a.chars().count().min(b.chars().count()))
+}
+
+/// Read the localization back and fail if any field that was sent is not
+/// stored byte for byte.
+async fn verify_localization(
+    client: &Client,
+    id: &str,
+    sent: &AppStoreVersionLocalizationFields,
+    no_verify: bool,
+) -> Result<()> {
+    if no_verify {
+        return Ok(());
+    }
+    let stored = client.get_app_store_version_localization(id).await?;
+    let mismatched = diff_fields(sent, &stored.attributes);
+    if mismatched.is_empty() {
+        return Ok(());
+    }
+    let details = mismatched
+        .iter()
+        .map(|name| {
+            let (sent, stored) = match *name {
+                "description" => (&sent.description, &stored.attributes.description),
+                "keywords" => (&sent.keywords, &stored.attributes.keywords),
+                "marketingUrl" => (&sent.marketing_url, &stored.attributes.marketing_url),
+                "promotionalText" => (&sent.promotional_text, &stored.attributes.promotional_text),
+                "supportUrl" => (&sent.support_url, &stored.attributes.support_url),
+                _ => (&sent.whats_new, &stored.attributes.whats_new),
+            };
+            let at = first_diff_index(
+                sent.as_deref().unwrap_or(""),
+                stored.as_deref().unwrap_or(""),
+            );
+            format!("{name} (first difference at char {at})")
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    anyhow::bail!("read-back mismatch on {id}: {details}")
+}
+
 /// Validate a `--version-string` before sending it. Apple takes one to
 /// three period-separated integers (`1.1` and `1.1.0` are both fine) and
 /// answers anything else with an opaque error, so the shape is checked
@@ -951,11 +1133,7 @@ fn validate_version_string(version_string: &str) -> Result<()> {
     Ok(())
 }
 
-/// Maximum length App Store Connect accepts for a "What to Test" note
-/// (`whatsNew` on `betaBuildLocalizations`). Apple's answer for anything
-/// longer is an opaque 400, so the CLI rejects locally and names the
-/// flag in the message.
-const WHATS_NEW_MAX_LEN: usize = 4000;
+use smbcloud_ascapi_aso::app_store_version_localization::WHATS_NEW_MAX_LEN;
 
 /// Validate a `--whats-new` text before sending it. App Store Connect caps
 /// the field at [`WHATS_NEW_MAX_LEN`] characters and answers with an opaque
@@ -1258,7 +1436,10 @@ async fn run_testflight(client: &Client, command: TestflightCommand, dry_run: bo
                 build_id,
                 locale,
                 whats_new,
+                whats_new_file,
             } => {
+                let whats_new = text_arg(whats_new, whats_new_file, "--whats-new-file")?
+                    .context("one of --whats-new or --whats-new-file is required")?;
                 validate_whats_new(&whats_new)?;
                 if dry_run {
                     println!(
@@ -1271,7 +1452,13 @@ async fn run_testflight(client: &Client, command: TestflightCommand, dry_run: bo
                     .await?;
                 print_json(&created)
             }
-            BetaBuildLocalizationsCommand::Update { id, whats_new } => {
+            BetaBuildLocalizationsCommand::Update {
+                id,
+                whats_new,
+                whats_new_file,
+            } => {
+                let whats_new = text_arg(whats_new, whats_new_file, "--whats-new-file")?
+                    .context("one of --whats-new or --whats-new-file is required")?;
                 validate_whats_new(&whats_new)?;
                 if dry_run {
                     println!("[dry-run] would update \"What to Test\" note {id}:");
@@ -1327,6 +1514,18 @@ async fn run_apps(
             print_json(&client.list_builds(&app_id, &filter).await?)
         }
         AppsCommand::Build { id } => print_json(&client.get_build(&id).await?),
+        AppsCommand::SetEncryption {
+            build_id,
+            uses_non_exempt_encryption,
+        } => {
+            let attributes = BuildUpdateAttributes {
+                uses_non_exempt_encryption: Some(uses_non_exempt_encryption),
+            };
+            if dry_run_guard(dry_run, &attributes)? {
+                return Ok(());
+            }
+            print_json(&client.update_build(&build_id, attributes).await?)
+        }
         AppsCommand::PreReleaseVersions { app_id, platform } => {
             let platform = platform.map(Platform::from);
             print_json(&client.list_pre_release_versions(&app_id, platform).await?)
@@ -1497,14 +1696,28 @@ async fn run_app_store_versions(
             println!("deleted {id}");
             Ok(())
         }
-        AppStoreVersionsCommand::SetBuild { id, build_id } => {
+        AppStoreVersionsCommand::Build { id } => {
+            let build = client.get_app_store_version_build(&id).await?;
+            if build.is_none() {
+                eprintln!("no build attached");
+            }
+            print_json(&build)
+        }
+        AppStoreVersionsCommand::SetBuild {
+            id,
+            build_id,
+            no_verify,
+        } => {
             if dry_run {
                 println!(
                     "# dry run — would PATCH /v1/appStoreVersions/{id} relationships.build → {build_id}"
                 );
                 return Ok(());
             }
-            print_json(&client.set_app_store_version_build(&id, &build_id).await?)
+            let attached = attach_build(client, &id, &build_id, !no_verify)
+                .await
+                .map_err(anyhow::Error::msg)?;
+            print_json(&attached)
         }
     }
 }
@@ -1622,57 +1835,78 @@ async fn run_app_store_version_localizations(
             app_store_version_id,
             locale,
             description,
+            description_file,
             keywords,
+            keywords_file,
             whats_new,
+            whats_new_file,
             promotional_text,
+            promotional_text_file,
             marketing_url,
             support_url,
+            no_verify,
         } => {
+            let fields = AppStoreVersionLocalizationFields {
+                description: text_arg(description, description_file, "--description-file")?,
+                keywords: text_arg(keywords, keywords_file, "--keywords-file")?,
+                whats_new: text_arg(whats_new, whats_new_file, "--whats-new-file")?,
+                promotional_text: text_arg(
+                    promotional_text,
+                    promotional_text_file,
+                    "--promotional-text-file",
+                )?,
+                marketing_url,
+                support_url,
+            };
+            lint_localization_fields(&fields)?;
             let attributes = AppStoreVersionLocalizationCreateAttributes {
                 locale,
-                fields: AppStoreVersionLocalizationFields {
-                    description,
-                    keywords,
-                    whats_new,
-                    promotional_text,
-                    marketing_url,
-                    support_url,
-                },
+                fields: fields.clone(),
             };
             if dry_run_guard(dry_run, &attributes)? {
                 return Ok(());
             }
-            print_json(
-                &client
-                    .create_app_store_version_localization(&app_store_version_id, attributes)
-                    .await?,
-            )
+            let created = client
+                .create_app_store_version_localization(&app_store_version_id, attributes)
+                .await?;
+            verify_localization(client, &created.id, &fields, no_verify).await?;
+            print_json(&created)
         }
         AppStoreVersionLocalizationsCommand::Update {
             id,
             description,
+            description_file,
             keywords,
+            keywords_file,
             whats_new,
+            whats_new_file,
             promotional_text,
+            promotional_text_file,
             marketing_url,
             support_url,
+            no_verify,
         } => {
             let fields = AppStoreVersionLocalizationFields {
-                description,
-                keywords,
-                whats_new,
-                promotional_text,
+                description: text_arg(description, description_file, "--description-file")?,
+                keywords: text_arg(keywords, keywords_file, "--keywords-file")?,
+                whats_new: text_arg(whats_new, whats_new_file, "--whats-new-file")?,
+                promotional_text: text_arg(
+                    promotional_text,
+                    promotional_text_file,
+                    "--promotional-text-file",
+                )?,
                 marketing_url,
                 support_url,
             };
+            lint_localization_fields(&fields)?;
             if dry_run_guard(dry_run, &fields)? {
                 return Ok(());
             }
-            print_json(
-                &client
-                    .update_app_store_version_localization(&id, fields)
-                    .await?,
-            )
+            let updated = client
+                .update_app_store_version_localization(&id, fields.clone())
+                .await?;
+            verify_localization(client, &updated.id, &fields, no_verify).await?;
+            print_json(&updated)
         }
         AppStoreVersionLocalizationsCommand::Delete { id } => {
             if dry_run {
@@ -2106,9 +2340,120 @@ mod tests {
     use super::validate_version_string;
     use super::validate_whats_new;
     use super::WHATS_NEW_MAX_LEN;
+    use super::{diff_fields, lint_localization_fields, text_arg, Cli};
+    use clap::Parser;
     use flate2::write::GzEncoder;
     use flate2::Compression;
+    use smbcloud_ascapi_aso::app_store_version_localization::{
+        AppStoreVersionLocalizationAttributes, AppStoreVersionLocalizationFields,
+    };
     use std::io::Write;
+
+    fn temp_file(name: &str, contents: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("asc-test-{}-{name}", std::process::id()));
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[test]
+    fn text_arg_strips_one_trailing_newline_and_keeps_the_rest() {
+        let path = temp_file("strip", "a & b\n\nline two\n");
+        let text = text_arg(None, Some(path.clone()), "--description-file").unwrap();
+        assert_eq!(text.as_deref(), Some("a & b\n\nline two"));
+        std::fs::write(&path, "crlf\r\n").unwrap();
+        let text = text_arg(None, Some(path.clone()), "--description-file").unwrap();
+        assert_eq!(text.as_deref(), Some("crlf"));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn text_arg_passes_inline_through_and_names_flag_on_error() {
+        assert_eq!(
+            text_arg(Some("x\n".into()), None, "--f")
+                .unwrap()
+                .as_deref(),
+            Some("x\n")
+        );
+        let error = text_arg(None, Some("/nonexistent/asc.txt".into()), "--keywords-file")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("--keywords-file") && error.contains("/nonexistent/asc.txt"));
+    }
+
+    #[test]
+    fn file_and_inline_flags_conflict() {
+        let result = Cli::try_parse_from([
+            "asc",
+            "app-store-version-localizations",
+            "update",
+            "id",
+            "--description",
+            "a",
+            "--description-file",
+            "b.txt",
+        ]);
+        assert!(result.is_err());
+        let result =
+            Cli::try_parse_from(["asc", "testflight", "build-localizations", "update", "id"]);
+        assert!(
+            result.is_err(),
+            "one of the two whats-new flags is required"
+        );
+        let result = Cli::try_parse_from([
+            "asc",
+            "testflight",
+            "build-localizations",
+            "update",
+            "id",
+            "--whats-new",
+            "a",
+            "--whats-new-file",
+            "b.txt",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn lint_names_the_flag() {
+        let fields = AppStoreVersionLocalizationFields {
+            promotional_text: Some("a".repeat(171)),
+            ..Default::default()
+        };
+        let error = lint_localization_fields(&fields).unwrap_err().to_string();
+        assert!(error.starts_with("--promotional-text is 171"), "{error}");
+    }
+
+    fn stored(description: Option<&str>) -> AppStoreVersionLocalizationAttributes {
+        AppStoreVersionLocalizationAttributes {
+            locale: "en-US".into(),
+            description: description.map(Into::into),
+            keywords: None,
+            marketing_url: None,
+            promotional_text: None,
+            support_url: None,
+            whats_new: None,
+        }
+    }
+
+    #[test]
+    fn diff_fields_matches_and_mismatches() {
+        let sent = AppStoreVersionLocalizationFields {
+            description: Some("abc".into()),
+            ..Default::default()
+        };
+        assert!(diff_fields(&sent, &stored(Some("abc"))).is_empty());
+        assert_eq!(
+            diff_fields(&sent, &stored(Some("abd"))),
+            vec!["description"]
+        );
+        assert_eq!(diff_fields(&sent, &stored(None)), vec!["description"]);
+        // Fields that were not sent are never compared.
+        assert!(diff_fields(
+            &AppStoreVersionLocalizationFields::default(),
+            &stored(Some("x"))
+        )
+        .is_empty());
+    }
 
     fn gzip(tsv: &str) -> Vec<u8> {
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
