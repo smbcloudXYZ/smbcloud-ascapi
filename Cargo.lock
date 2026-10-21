@@ -1727,7 +1727,7 @@ checksum = "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891"
 
 [[package]]
 name = "smbcloud-ascapi-aso"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "md5",
@@ -1739,7 +1739,7 @@ dependencies = [
 
 [[package]]
 name = "smbcloud-ascapi-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1760,7 +1760,7 @@ dependencies = [
 
 [[package]]
 name = "smbcloud-ascapi-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "jsonwebtoken",
  "reqwest",
@@ -1771,7 +1771,7 @@ dependencies = [
 
 [[package]]
 name = "smbcloud-ascapi-frontend"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "base64 0.22.1",
  "schemars",
@@ -1785,7 +1785,7 @@ dependencies = [
 
 [[package]]
 name = "smbcloud-ascapi-mcp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "rmcp",
@@ -1801,7 +1801,7 @@ dependencies = [
 
 [[package]]
 name = "smbcloud-ascapi-pricing"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -1812,7 +1812,7 @@ dependencies = [
 
 [[package]]
 name = "smbcloud-ascapi-reports"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -1821,7 +1821,7 @@ dependencies = [
 
 [[package]]
 name = "smbcloud-ascapi-signing"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "rand 0.8.8",
