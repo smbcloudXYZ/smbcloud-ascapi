@@ -19,6 +19,7 @@ use smbcloud_ascapi_aso::build::{BuildFilter, BuildUpdateAttributes};
 use smbcloud_ascapi_aso::bundle_id::{BundleIdCreateAttributes, BundleIdPlatform};
 use smbcloud_ascapi_aso::prelude::*;
 use smbcloud_ascapi_core::{ApiKey, Client};
+use smbcloud_ascapi_frontend::attach_build::attach_build;
 use smbcloud_ascapi_frontend::await_processing::{await_processing, AwaitConfig};
 use smbcloud_ascapi_frontend::review;
 use smbcloud_ascapi_frontend::upload::{self, upload_package, validate_app, AltoolAuth, AltoolOp};
@@ -722,7 +723,14 @@ enum AppStoreVersionsCommand {
         id: String,
         #[arg(long)]
         build_id: String,
+        /// Skip the read-back check that the version now reports this build.
+        #[arg(long)]
+        no_verify: bool,
     },
+    /// `GET /v1/appStoreVersions/{id}/build` — the build attached to this
+    /// version, or `null` when there is none. Read-only; run it before
+    /// `review-submissions submit`.
+    Build { id: String },
 }
 
 #[derive(Subcommand)]
@@ -743,7 +751,8 @@ enum ReviewSubmissionsCommand {
     Submit {
         app_id: String,
         /// The App Store Version to submit (see `app-store-versions list`).
-        /// It needs a build attached (`app-store-versions set-build`).
+        /// It needs a build attached (`app-store-versions set-build`;
+        /// check with `app-store-versions build`).
         #[arg(long)]
         version_id: String,
     },
@@ -1687,14 +1696,28 @@ async fn run_app_store_versions(
             println!("deleted {id}");
             Ok(())
         }
-        AppStoreVersionsCommand::SetBuild { id, build_id } => {
+        AppStoreVersionsCommand::Build { id } => {
+            let build = client.get_app_store_version_build(&id).await?;
+            if build.is_none() {
+                eprintln!("no build attached");
+            }
+            print_json(&build)
+        }
+        AppStoreVersionsCommand::SetBuild {
+            id,
+            build_id,
+            no_verify,
+        } => {
             if dry_run {
                 println!(
                     "# dry run — would PATCH /v1/appStoreVersions/{id} relationships.build → {build_id}"
                 );
                 return Ok(());
             }
-            print_json(&client.set_app_store_version_build(&id, &build_id).await?)
+            let attached = attach_build(client, &id, &build_id, !no_verify)
+                .await
+                .map_err(anyhow::Error::msg)?;
+            print_json(&attached)
         }
     }
 }

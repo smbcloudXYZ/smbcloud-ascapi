@@ -41,6 +41,7 @@ ascapi_mcp_tools!(
     "app_store_version_create",
     "app_store_version_delete",
     "app_store_version_set_build",
+    "app_store_version_build_get",
     "app_info_localization_list",
     "app_info_localization_create",
     "app_info_localization_update",
@@ -107,7 +108,7 @@ mod tests {
     /// The canonical tool names. Adding or renaming one is a
     /// public-contract change, and this list is what makes that
     /// deliberate rather than accidental.
-    const CANONICAL_TOOL_NAMES: [&str; 30] = [
+    const CANONICAL_TOOL_NAMES: [&str; 31] = [
         "app_list",
         "app_get",
         "app_update",
@@ -120,6 +121,7 @@ mod tests {
         "app_store_version_create",
         "app_store_version_delete",
         "app_store_version_set_build",
+        "app_store_version_build_get",
         "app_info_localization_list",
         "app_info_localization_create",
         "app_info_localization_update",
