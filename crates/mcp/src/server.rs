@@ -59,7 +59,10 @@ ascapi_mcp_tools!(
     "certificate_list",
     "certificate_create",
     "beta_group_list",
-    "beta_app_review_detail_get"
+    "beta_app_review_detail_get",
+    "play_listing_list",
+    "play_images_list",
+    "play_track_get"
 );
 
 #[rmcp::tool_handler(router = Self::ascapi_tool_router())]
@@ -108,7 +111,7 @@ mod tests {
     /// The canonical tool names. Adding or renaming one is a
     /// public-contract change, and this list is what makes that
     /// deliberate rather than accidental.
-    const CANONICAL_TOOL_NAMES: [&str; 31] = [
+    const CANONICAL_TOOL_NAMES: [&str; 34] = [
         "app_list",
         "app_get",
         "app_update",
@@ -140,6 +143,9 @@ mod tests {
         "certificate_create",
         "beta_group_list",
         "beta_app_review_detail_get",
+        "play_listing_list",
+        "play_images_list",
+        "play_track_get",
     ];
 
     /// Never a tool, at any point, for any caller.

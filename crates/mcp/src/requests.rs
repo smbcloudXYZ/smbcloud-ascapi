@@ -275,3 +275,28 @@ pub struct BetaAppReviewDetailGetRequest {
     /// retrieve.
     pub app_id: String,
 }
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct PlayPackageRequest {
+    /// Android application id, e.g. xyz.smbcloud.SiGit.
+    pub package_name: String,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct PlayImagesListRequest {
+    /// Android application id, e.g. xyz.smbcloud.SiGit.
+    pub package_name: String,
+    /// Listing locale, e.g. en-US or id.
+    pub locale: String,
+    /// Image bucket: phone-screenshots, seven-inch-screenshots,
+    /// ten-inch-screenshots, feature-graphic or icon.
+    pub image_type: String,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct PlayTrackGetRequest {
+    /// Android application id, e.g. xyz.smbcloud.SiGit.
+    pub package_name: String,
+    /// Track name: internal, alpha, beta or production.
+    pub track: String,
+}

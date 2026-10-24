@@ -8,6 +8,7 @@ from the other:
 | Crate | What it is |
 | --- | --- |
 | `smbcloud-ascapi-core` | Shared transport: JWT auth, the HTTP client, JSON:API envelopes, error types |
+| `smbcloud-ascapi-play` | Google Play (Edits v3): store listings, listing images, track release notes; service-account auth, independent of `core` |
 | `smbcloud-ascapi-aso` | App Metadata: apps, app infos, versions, builds, pre-release versions, review submissions, bundle IDs, localizations, screenshots |
 | `smbcloud-ascapi-pricing` | Pricing: app price schedules, and the per-territory prices joined with their price points and currencies |
 | `smbcloud-ascapi-signing` | Code signing: certificates and provisioning profiles, plus local RSA key pair and CSR generation |
@@ -16,7 +17,7 @@ from the other:
 | `smbcloud-ascapi-mcp` | The MCP contract and stdio server |
 | `smbcloud-ascapi-cli` | The `asc` binary: clap command tree, plus `--mcp` |
 
-`aso`, `pricing`, `signing` and `reports` know nothing about each other, and neither knows
+`aso`, `play`, `pricing`, `signing` and `reports` know nothing about each other, and neither knows
 anything about the front ends. Each adds its calls to
 `smbcloud_ascapi_core::Client` as **extension traits**, since Rust only
 allows inherent impls in the crate that defines a type:
