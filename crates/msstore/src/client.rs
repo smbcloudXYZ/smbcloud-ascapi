@@ -37,10 +37,12 @@ impl MsStoreClient {
         let token = self.tokens.get(&self.http, &self.credentials).await?;
         let mut request = self
             .http
-            .request(method, format!("{}{path}", self.root))
+            .request(method.clone(), format!("{}{path}", self.root))
             .bearer_auth(token);
         if let Some(body) = body {
             request = request.json(body);
+        } else if method == Method::POST {
+            request = request.header("Content-Length", "0");
         }
         let response = request.send().await?;
         let status = response.status();
@@ -66,12 +68,10 @@ impl MsStoreClient {
 
     /// Create a submission cloned from the last published one.
     pub async fn create_submission(&self, product_id: &str) -> Result<Value> {
-        self.send(
-            Method::POST,
-            &app_path(product_id, "/submissions"),
-            Some(&Value::Object(Default::default())),
-        )
-        .await
+        // No body: the API clones the last published submission, and an
+        // empty JSON object is read as a submission with no listings.
+        self.send(Method::POST, &app_path(product_id, "/submissions"), None)
+            .await
     }
 
     pub async fn get_submission(&self, product_id: &str, submission_id: &str) -> Result<Value> {
