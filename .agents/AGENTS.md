@@ -129,7 +129,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace --locked
-cargo check -p smbcloud-ascapi-core --locked   # also -aso, -play, -signing: each lower crate must build alone
+cargo check -p smbcloud-ascapi-core --locked   # also -aso, -play, -msstore, -signing: each lower crate must build alone
 ```
 
 Single test: `cargo test -p smbcloud-ascapi-aso build::tests::<name>`.
@@ -283,3 +283,40 @@ failed upload keeps the old set. MCP exposes only the reads
 (`play_listing_list`, `play_images_list`, `play_track_get`); every write stays
 CLI-only, like review submission. The operations live in
 `crates/frontend/src/play.rs`.
+
+## Microsoft Store (CLI)
+
+`crates/msstore` is a sibling of `crates/play` and does not depend on `core`.
+Auth is Entra client credentials (`login.microsoftonline.com/{tenant}/oauth2/token`,
+resource `https://manage.devcenter.microsoft.com`), cached until expiry. The
+credentials come from a dotenv file (`--msstore-env` or `MSSTORE_ENV_PATH`) with
+`MSSTORE_TENANT_ID`, `MSSTORE_CLIENT_ID`, `MSSTORE_CLIENT_SECRET`,
+`MSSTORE_SELLER_ID` and `MSSTORE_PRODUCT_ID`, or from the same variables set
+directly. `asc msstore` does not need the App Store Connect key.
+
+The package upload stays with CI. This only edits listing text, and it reuses
+the pending submission (the CI draft that holds the MSIX) instead of replacing
+it; a submission is created only when none is pending. A submission being
+processed or certified is refused. Submissions are `serde_json::Value`, and only
+the `baseListing` keys title, shortDescription, description, releaseNotes,
+features and keywords are replaced, so packages and pricing round-trip. Commit
+to certification is deliberately not implemented: it stays a Partner Center
+click or the CI `commit_submission` input.
+
+```sh
+asc msstore app [--product-id 9P69PH1K7NXX]
+asc msstore submissions status
+asc msstore listings get --locale en-us
+asc --dry-run msstore listings update --locale en-us \
+  --title-file t.txt --short-description-file s.txt --description-file d.txt \
+  --release-notes-file n.txt --features-file f.txt --keywords-file k.txt
+```
+
+`--dry-run` prints the diff and writes nothing; if it had to create a
+submission, it deletes it again. After the PUT the listing is read back and
+compared exactly. Limits linted before sending: title 256, short description
+1000, description 10000, release notes 1500, up to 20 features of 200
+characters, up to 7 search terms of 30 characters and 21 words in total; em
+dashes and curly quotes warn. MCP exposes only the reads (`msstore_app_get`,
+`msstore_submission_status`, `msstore_listing_get`). The operations live in
+`crates/frontend/src/msstore.rs`.

@@ -5,6 +5,7 @@ members = [
     "crates/aso",
     "crates/play",
     "crates/appgallery",
+    "crates/msstore",
     "crates/signing",
     "crates/pricing",
     "crates/reports",
@@ -25,6 +26,7 @@ smbcloud-ascapi-core = { version = "0.3.0", path = "crates/core" }
 smbcloud-ascapi-aso = { version = "0.3.0", path = "crates/aso" }
 smbcloud-ascapi-play = { version = "0.3.0", path = "crates/play" }
 smbcloud-ascapi-appgallery = { version = "0.3.0", path = "crates/appgallery" }
+smbcloud-ascapi-msstore = { version = "0.3.0", path = "crates/msstore" }
 smbcloud-ascapi-signing = { version = "0.3.0", path = "crates/signing" }
 smbcloud-ascapi-pricing = { version = "0.3.0", path = "crates/pricing" }
 smbcloud-ascapi-reports = { version = "0.3.0", path = "crates/reports" }

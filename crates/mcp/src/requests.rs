@@ -329,3 +329,20 @@ pub struct AppGalleryPackageStatusRequest {
     /// Package ids (pkgVersion) from appgallery_package_list.
     pub pkg_ids: Vec<String>,
 }
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct MsStoreProductRequest {
+    /// Microsoft Store product id, e.g. 9P69PH1K7NXX. Defaults to
+    /// MSSTORE_PRODUCT_ID.
+    #[serde(default)]
+    pub product_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct MsStoreListingGetRequest {
+    /// Microsoft Store product id. Defaults to MSSTORE_PRODUCT_ID.
+    #[serde(default)]
+    pub product_id: Option<String>,
+    /// Listing locale, e.g. en-us.
+    pub locale: String,
+}

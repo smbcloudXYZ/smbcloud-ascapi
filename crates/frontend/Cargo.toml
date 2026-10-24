@@ -19,6 +19,7 @@ serde_json = { workspace = true }
 sha2 = "0.10"
 smbcloud-ascapi-appgallery = { workspace = true }
 smbcloud-ascapi-aso = { workspace = true }
+smbcloud-ascapi-msstore = { workspace = true }
 smbcloud-ascapi-core = { workspace = true }
 smbcloud-ascapi-play = { workspace = true }
 smbcloud-ascapi-signing = { workspace = true }

@@ -1797,6 +1797,7 @@ dependencies = [
  "smbcloud-ascapi-core",
  "smbcloud-ascapi-frontend",
  "smbcloud-ascapi-mcp",
+ "smbcloud-ascapi-msstore",
  "smbcloud-ascapi-play",
  "smbcloud-ascapi-pricing",
  "smbcloud-ascapi-reports",
@@ -1827,6 +1828,7 @@ dependencies = [
  "smbcloud-ascapi-appgallery",
  "smbcloud-ascapi-aso",
  "smbcloud-ascapi-core",
+ "smbcloud-ascapi-msstore",
  "smbcloud-ascapi-play",
  "smbcloud-ascapi-signing",
  "tokio",
@@ -1845,6 +1847,17 @@ dependencies = [
  "smbcloud-ascapi-core",
  "smbcloud-ascapi-frontend",
  "smbcloud-ascapi-signing",
+ "tokio",
+]
+
+[[package]]
+name = "smbcloud-ascapi-msstore"
+version = "0.3.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
  "tokio",
 ]
 

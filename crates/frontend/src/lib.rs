@@ -28,6 +28,7 @@ pub mod enums;
 pub mod env;
 #[cfg(target_os = "macos")]
 pub mod keychain;
+pub mod msstore;
 pub mod play;
 pub mod profiles;
 pub mod review;
