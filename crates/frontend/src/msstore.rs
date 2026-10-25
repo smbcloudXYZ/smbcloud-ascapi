@@ -102,6 +102,73 @@ pub async fn submission_status(
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SubmissionRead {
+    pub submission_id: String,
+    /// `pending` or `lastPublished`.
+    pub source: &'static str,
+    pub status: Option<String>,
+    pub packages: Vec<Value>,
+    pub listing_locales: Vec<String>,
+}
+
+/// The package keys worth showing. The raw package record can carry a signed
+/// upload URL, so it is not passed through whole.
+const PACKAGE_KEYS: [&str; 5] = ["fileName", "version", "fileStatus", "architecture", "id"];
+
+/// The packages and listing locales of a submission: the given one, else the
+/// pending one, else the last published one.
+pub async fn read_submission(
+    client: &MsStoreClient,
+    product_id: Option<&str>,
+    submission_id: Option<&str>,
+) -> Result<SubmissionRead, String> {
+    let product_id = product(client, product_id);
+    let (id, source) = match submission_id {
+        Some(id) => (id.to_string(), "requested"),
+        None => {
+            let app = client.get_app(product_id).await.map_err(err)?;
+            match str_at(&app, "/pendingApplicationSubmission/id") {
+                Some(id) => (id.to_string(), "pending"),
+                None => match str_at(&app, "/lastPublishedApplicationSubmission/id") {
+                    Some(id) => (id.to_string(), "lastPublished"),
+                    None => return Err("the app has no submission".to_string()),
+                },
+            }
+        }
+    };
+    let submission = client.get_submission(product_id, &id).await.map_err(err)?;
+    let packages = submission
+        .get("applicationPackages")
+        .and_then(Value::as_array)
+        .map(|packages| {
+            packages
+                .iter()
+                .map(|package| {
+                    let kept = PACKAGE_KEYS
+                        .iter()
+                        .filter_map(|key| package.get(*key).map(|v| (key.to_string(), v.clone())))
+                        .collect();
+                    Value::Object(kept)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let listing_locales = submission
+        .get("listings")
+        .and_then(Value::as_object)
+        .map(|listings| listings.keys().cloned().collect())
+        .unwrap_or_default();
+    Ok(SubmissionRead {
+        submission_id: id,
+        source,
+        status: str_at(&submission, "/status").map(str::to_string),
+        packages,
+        listing_locales,
+    })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ListingRead {
     pub submission_id: String,
     /// `pending` or `lastPublished`.

@@ -588,6 +588,14 @@ enum MsStoreSubmissionsCommand {
         #[arg(long)]
         product_id: Option<String>,
     },
+    /// The packages and listing locales of a submission: the pending one,
+    /// else the last published one, unless `--submission-id` names one.
+    Get {
+        #[arg(long)]
+        product_id: Option<String>,
+        #[arg(long)]
+        submission_id: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1027,6 +1035,14 @@ async fn run_msstore(
         MsStoreCommand::Submissions { command } => match command {
             MsStoreSubmissionsCommand::Status { product_id } => print_json(
                 &msstore::submission_status(&client, product_id.as_deref())
+                    .await
+                    .map_err(fail)?,
+            ),
+            MsStoreSubmissionsCommand::Get {
+                product_id,
+                submission_id,
+            } => print_json(
+                &msstore::read_submission(&client, product_id.as_deref(), submission_id.as_deref())
                     .await
                     .map_err(fail)?,
             ),
