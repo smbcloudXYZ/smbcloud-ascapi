@@ -92,7 +92,7 @@ jobs:
       - name: Check the lower crates build alone
         shell: bash
         run: |
-          for crate in core aso pricing signing reports; do
+          for crate in core aso pricing signing reports play; do
             cargo check -p "smbcloud-ascapi-${crate}" --locked
           done
 
@@ -135,13 +135,15 @@ jobs:
 
           # Dependency order: a crate can only be published once everything it
           # depends on is on crates.io. core first, then the domain crates
-          # that only depend on core, then frontend, mcp, and the CLI last.
+          # that only depend on core, then play (which depends on neither),
+          # then frontend, mcp, and the CLI last.
           crates=(
             core
             aso
             pricing
             signing
             reports
+            play
             frontend
             mcp
             cli
