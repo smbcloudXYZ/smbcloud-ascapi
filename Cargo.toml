@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/core",
     "crates/aso",
+    "crates/play",
     "crates/signing",
     "crates/pricing",
     "crates/reports",
@@ -21,6 +22,7 @@ repository = "https://github.com/smbcloudXYZ/smbcloud-ascapi"
 [workspace.dependencies]
 smbcloud-ascapi-core = { version = "0.4.0", path = "crates/core" }
 smbcloud-ascapi-aso = { version = "0.4.0", path = "crates/aso" }
+smbcloud-ascapi-play = { version = "0.4.0", path = "crates/play" }
 smbcloud-ascapi-signing = { version = "0.4.0", path = "crates/signing" }
 smbcloud-ascapi-pricing = { version = "0.4.0", path = "crates/pricing" }
 smbcloud-ascapi-reports = { version = "0.4.0", path = "crates/reports" }

@@ -102,7 +102,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace --locked
-cargo check -p smbcloud-ascapi-core --locked   # also -aso, -signing: each lower crate must build alone
+cargo check -p smbcloud-ascapi-core --locked   # also -aso, -play, -signing: each lower crate must build alone
 ```
 
 Single test: `cargo test -p smbcloud-ascapi-aso build::tests::<name>`.
@@ -224,3 +224,35 @@ The API is `ReviewSubmissionsApi` in `crates/aso/src/review_submission.rs`;
 the plan/submit orchestration is `crates/frontend/src/review.rs`. Submitting is
 CLI-only on purpose: it sends a build to App Review, which an MCP tool call
 shouldn't do on a model's say-so.
+
+## Google Play (CLI)
+
+`crates/play` is the one non-Apple store backend. It does not depend on
+`core`: Play authenticates with a service account (RS256 JWT exchanged at
+`oauth2.googleapis.com/token`, scope `androidpublisher`) and has its own error
+envelope. The key comes from `--play-service-account`,
+`PLAY_SERVICE_ACCOUNT_JSON_PATH`, or the contents in `PLAY_SERVICE_ACCOUNT_JSON`.
+`asc play` does not need the App Store Connect key.
+
+Everything in Play happens inside an *edit*. Each command opens one, applies,
+`validate`s, and commits only without `--dry-run`; a dry run prints the body
+and deletes the edit. Writes read back after commit and fail on any difference.
+
+```sh
+asc play listings list <PACKAGE>
+asc play listings update <PACKAGE> --locale en-US \
+  --title-file t.txt --short-description-file s.txt --full-description-file d.txt
+asc play images list <PACKAGE> --locale en-US --type phone-screenshots
+asc play images replace <PACKAGE> --locale en-US --type phone-screenshots --file a.png --file b.png
+asc play tracks get <PACKAGE> --track internal
+asc play tracks set-notes <PACKAGE> --track internal --version-code 120 --locale en-US --notes-file n.txt
+```
+
+Limits linted before sending: title 30, short description 80, full description
+4000, release notes 500 characters per language; feature graphic exactly
+1024x500, icon 512x512, screenshots 320 to 3840 px with at most 2:1 aspect.
+`images replace` deletes the bucket and uploads the files in one edit, so a
+failed upload keeps the old set. MCP exposes only the reads
+(`play_listing_list`, `play_images_list`, `play_track_get`); every write stays
+CLI-only, like review submission. The operations live in
+`crates/frontend/src/play.rs`.

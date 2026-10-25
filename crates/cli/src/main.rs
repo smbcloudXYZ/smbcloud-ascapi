@@ -23,6 +23,7 @@ use smbcloud_ascapi_frontend::attach_build::attach_build;
 use smbcloud_ascapi_frontend::await_processing::{await_processing, AwaitConfig};
 use smbcloud_ascapi_frontend::review;
 use smbcloud_ascapi_frontend::upload::{self, upload_package, validate_app, AltoolAuth, AltoolOp};
+use smbcloud_ascapi_play::{ImageType as PlayImageType, ListingFields as PlayListingFields};
 use smbcloud_ascapi_pricing::app_price::PriceKind;
 use smbcloud_ascapi_pricing::prelude::*;
 use smbcloud_ascapi_reports::prelude::*;
@@ -46,11 +47,11 @@ struct Cli {
     /// Store Connect API). Not required with `--mcp`, which resolves
     /// credentials per tool call so an unconfigured server can still list
     /// its tools.
-    #[arg(long, env = "ASC_API_KEY", required_unless_present = "mcp")]
+    #[arg(long, env = "ASC_API_KEY")]
     key_id: Option<String>,
 
     /// App Store Connect API issuer ID (same page as the key).
-    #[arg(long, env = "ASC_ISSUER_ID", required_unless_present = "mcp")]
+    #[arg(long, env = "ASC_ISSUER_ID")]
     issuer_id: Option<String>,
 
     /// Run as an MCP server over stdio instead of executing a subcommand.
@@ -76,7 +77,144 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+enum PlayCommand {
+    /// Localized store listing text (title, short and full description).
+    Listings {
+        #[command(subcommand)]
+        command: PlayListingsCommand,
+    },
+    /// Listing images: screenshots, feature graphic, icon.
+    Images {
+        #[command(subcommand)]
+        command: PlayImagesCommand,
+    },
+    /// Release notes on a track release.
+    Tracks {
+        #[command(subcommand)]
+        command: PlayTracksCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum PlayListingsCommand {
+    /// Every localized listing of an app.
+    List { package: String },
+    /// Patch one locale's listing, then read it back. With `--dry-run` the
+    /// edit is opened, the body printed, and the edit deleted.
+    Update {
+        package: String,
+        #[arg(long)]
+        locale: String,
+        /// Title, up to 30 characters.
+        #[arg(long, conflicts_with = "title_file")]
+        title: Option<String>,
+        /// Read the title from a UTF-8 file; one trailing newline is dropped.
+        #[arg(long)]
+        title_file: Option<PathBuf>,
+        /// Short description, up to 80 characters.
+        #[arg(long, conflicts_with = "short_description_file")]
+        short_description: Option<String>,
+        /// Read the short description from a UTF-8 file.
+        #[arg(long)]
+        short_description_file: Option<PathBuf>,
+        /// Full description, up to 4000 characters.
+        #[arg(long, conflicts_with = "full_description_file")]
+        full_description: Option<String>,
+        /// Read the full description from a UTF-8 file.
+        #[arg(long)]
+        full_description_file: Option<PathBuf>,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum CliPlayImageType {
+    PhoneScreenshots,
+    SevenInchScreenshots,
+    TenInchScreenshots,
+    FeatureGraphic,
+    Icon,
+}
+
+impl From<CliPlayImageType> for PlayImageType {
+    fn from(value: CliPlayImageType) -> Self {
+        match value {
+            CliPlayImageType::PhoneScreenshots => Self::PhoneScreenshots,
+            CliPlayImageType::SevenInchScreenshots => Self::SevenInchScreenshots,
+            CliPlayImageType::TenInchScreenshots => Self::TenInchScreenshots,
+            CliPlayImageType::FeatureGraphic => Self::FeatureGraphic,
+            CliPlayImageType::Icon => Self::Icon,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+enum PlayImagesCommand {
+    /// Images in one bucket of one locale.
+    List {
+        package: String,
+        #[arg(long)]
+        locale: String,
+        #[arg(long = "type")]
+        image_type: CliPlayImageType,
+    },
+    /// Replace a bucket with the given files, in order, in one edit: the old
+    /// set is deleted and the new one uploaded, so a failed upload keeps the
+    /// old set. Sizes are checked before anything is sent.
+    Replace {
+        package: String,
+        #[arg(long)]
+        locale: String,
+        #[arg(long = "type")]
+        image_type: CliPlayImageType,
+        /// PNG or JPEG file; repeat for each image, in display order.
+        #[arg(long = "file", required = true)]
+        files: Vec<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum PlayTracksCommand {
+    /// A track and its releases, with their release notes.
+    Get {
+        package: String,
+        #[arg(long)]
+        track: String,
+    },
+    /// Set one locale's release notes (up to 500 characters) on the release
+    /// carrying a version code, then read the track back.
+    SetNotes {
+        package: String,
+        #[arg(long)]
+        track: String,
+        #[arg(long)]
+        version_code: String,
+        #[arg(long)]
+        locale: String,
+        #[arg(
+            long,
+            conflicts_with = "notes_file",
+            required_unless_present = "notes_file"
+        )]
+        notes: Option<String>,
+        /// Read the notes from a UTF-8 file; one trailing newline is dropped.
+        #[arg(long)]
+        notes_file: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
 enum Command {
+    /// Google Play store listings: text, images, and release notes. Uses a
+    /// Play service account, not the App Store Connect key.
+    Play {
+        /// Path to the Play service-account JSON key. Falls back to
+        /// `PLAY_SERVICE_ACCOUNT_JSON_PATH`, then to the key contents in
+        /// `PLAY_SERVICE_ACCOUNT_JSON`.
+        #[arg(long, global = true)]
+        play_service_account: Option<PathBuf>,
+        #[command(subcommand)]
+        command: PlayCommand,
+    },
     /// Look up apps by bundle ID, or a specific app by its ASC app ID.
     Apps {
         #[command(subcommand)]
@@ -157,6 +295,119 @@ enum Command {
         #[command(subcommand)]
         command: SigningCommand,
     },
+}
+
+async fn run_play(
+    service_account: Option<&std::path::Path>,
+    command: PlayCommand,
+    dry_run: bool,
+) -> Result<()> {
+    use smbcloud_ascapi_frontend::play;
+    let client = play::play_client(service_account).map_err(|e| anyhow::anyhow!(e))?;
+    let fail = |e: String| anyhow::anyhow!(e);
+    match command {
+        PlayCommand::Listings { command } => match command {
+            PlayListingsCommand::List { package } => {
+                print_json(&play::read_listings(&client, &package).await.map_err(fail)?)
+            }
+            PlayListingsCommand::Update {
+                package,
+                locale,
+                title,
+                title_file,
+                short_description,
+                short_description_file,
+                full_description,
+                full_description_file,
+            } => {
+                let fields = PlayListingFields {
+                    title: text_arg(title, title_file, "--title-file")?,
+                    short_description: text_arg(
+                        short_description,
+                        short_description_file,
+                        "--short-description-file",
+                    )?,
+                    full_description: text_arg(
+                        full_description,
+                        full_description_file,
+                        "--full-description-file",
+                    )?,
+                };
+                let result = play::update_listing(&client, &package, &locale, fields, dry_run)
+                    .await
+                    .map_err(fail)?;
+                if result.dry_run {
+                    println!("# dry run: nothing was committed; body that would be sent:");
+                }
+                print_json(&result)
+            }
+        },
+        PlayCommand::Images { command } => match command {
+            PlayImagesCommand::List {
+                package,
+                locale,
+                image_type,
+            } => print_json(
+                &play::read_images(&client, &package, &locale, image_type.into())
+                    .await
+                    .map_err(fail)?,
+            ),
+            PlayImagesCommand::Replace {
+                package,
+                locale,
+                image_type,
+                files,
+            } => {
+                let result = play::replace_images(
+                    &client,
+                    &package,
+                    &locale,
+                    image_type.into(),
+                    &files,
+                    dry_run,
+                )
+                .await
+                .map_err(fail)?;
+                if result.dry_run {
+                    println!("# dry run: nothing was committed; images that would be uploaded:");
+                }
+                print_json(&result)
+            }
+        },
+        PlayCommand::Tracks { command } => match command {
+            PlayTracksCommand::Get { package, track } => print_json(
+                &play::read_track(&client, &package, &track)
+                    .await
+                    .map_err(fail)?,
+            ),
+            PlayTracksCommand::SetNotes {
+                package,
+                track,
+                version_code,
+                locale,
+                notes,
+                notes_file,
+            } => {
+                let notes = text_arg(notes, notes_file, "--notes-file")?
+                    .context("--notes or --notes-file is required")?;
+                let result = play::set_track_notes(
+                    &client,
+                    &package,
+                    &track,
+                    &version_code,
+                    &locale,
+                    &notes,
+                    dry_run,
+                )
+                .await
+                .map_err(fail)?;
+                if result.dry_run {
+                    println!("# dry run: nothing was committed; track as it would be:");
+                }
+                print_json(&result)
+            }
+        },
+    }
 }
 
 /// macOS-only signing diagnostics.
@@ -1231,6 +1482,14 @@ async fn main() -> Result<()> {
         return smbcloud_ascapi_mcp::serve().await;
     }
 
+    if let Some(Command::Play {
+        play_service_account,
+        command,
+    }) = cli.command
+    {
+        return run_play(play_service_account.as_deref(), command, cli.dry_run).await;
+    }
+
     let key_id = cli
         .key_id
         .clone()
@@ -1262,6 +1521,7 @@ async fn main() -> Result<()> {
     };
 
     match command {
+        Command::Play { .. } => unreachable!("handled before App Store Connect credentials"),
         Command::Apps { command } => run_apps(&client, &altool_auth, command, cli.dry_run).await,
         Command::BundleIds { command } => run_bundle_ids(&client, command, cli.dry_run).await,
         Command::AppStoreVersions { command } => {

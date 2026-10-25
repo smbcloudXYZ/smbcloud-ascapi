@@ -69,7 +69,10 @@ macro_rules! ascapi_mcp_tools {
         $certificate_list_name:literal,
         $certificate_create_name:literal,
         $beta_group_list_name:literal,
-        $beta_app_review_detail_get_name:literal
+        $beta_app_review_detail_get_name:literal,
+        $play_listing_list_name:literal,
+        $play_images_list_name:literal,
+        $play_track_get_name:literal
     ) => {
         #[::rmcp::tool_router(router = ascapi_tool_router, vis = "pub(crate)")]
         impl $server {
@@ -963,6 +966,79 @@ macro_rules! ascapi_mcp_tools {
                     .map_err(|error| ::rmcp::model::ErrorData::internal_error(error.to_string(), None))?;
                 Ok(::rmcp::model::CallToolResult::success(vec![
                     ::rmcp::model::ContentBlock::json(&detail)?,
+                ]))
+            }
+
+            #[::rmcp::tool(
+                name = $play_listing_list_name,
+                title = "List Play listings",
+                annotations(title = "List Play listings", read_only_hint = true, idempotent_hint = true),
+                description = "Purpose: read every localized Google Play store listing of an app. When to use vs siblings: use this for listing text; play_images_list reads screenshots and graphics, play_track_get reads release notes. Behavior: opens a Play edit, reads the listings (language, title, short and full description, video) and discards the edit, so nothing changes. Prerequisites: a Google Play service account with access to the app, given as a key file at PLAY_SERVICE_ACCOUNT_JSON_PATH or inline in PLAY_SERVICE_ACCOUNT_JSON. Failure modes: missing credentials return an invalid-request error naming what is absent; Google Play errors are returned verbatim with their status. Limitations: read-only; changing a listing is available only through the asc play listings update command."
+            )]
+            async fn play_listing_list(
+                &self,
+                parameters: ::rmcp::handler::server::wrapper::Parameters<$crate::PlayPackageRequest>,
+            ) -> ::std::result::Result<::rmcp::model::CallToolResult, ::rmcp::model::ErrorData> {
+                use ::smbcloud_ascapi_frontend::play;
+                let client = play::play_client(None)
+                    .map_err(|error| ::rmcp::model::ErrorData::invalid_request(error, None))?;
+                let request = parameters.0;
+                let value = play::read_listings(&client, &request.package_name)
+                    .await
+                    .map_err(|error| ::rmcp::model::ErrorData::internal_error(error, None))?;
+                Ok(::rmcp::model::CallToolResult::success(vec![
+                    ::rmcp::model::ContentBlock::json(&value)?,
+                ]))
+            }
+
+            #[::rmcp::tool(
+                name = $play_images_list_name,
+                title = "List Play listing images",
+                annotations(title = "List Play listing images", read_only_hint = true, idempotent_hint = true),
+                description = "Purpose: list the images in one bucket (phone screenshots, tablet screenshots, feature graphic or icon) of one Google Play listing locale. When to use vs siblings: use play_listing_list for text and play_track_get for release notes. Behavior: opens a Play edit, reads the bucket's image ids, URLs and hashes, and discards the edit. Prerequisites: a Google Play service account with access to the app, given as a key file at PLAY_SERVICE_ACCOUNT_JSON_PATH or inline in PLAY_SERVICE_ACCOUNT_JSON. Failure modes: missing credentials return an invalid-request error naming what is absent; Google Play errors are returned verbatim with their status. Limitations: read-only; replacing images is available only through the asc play images replace command."
+            )]
+            async fn play_images_list(
+                &self,
+                parameters: ::rmcp::handler::server::wrapper::Parameters<$crate::PlayImagesListRequest>,
+            ) -> ::std::result::Result<::rmcp::model::CallToolResult, ::rmcp::model::ErrorData> {
+                use ::smbcloud_ascapi_frontend::play;
+                let client = play::play_client(None)
+                    .map_err(|error| ::rmcp::model::ErrorData::invalid_request(error, None))?;
+                let request = parameters.0;
+                let image_type = play::image_type_from_str(&request.image_type)
+                    .map_err(|error| ::rmcp::model::ErrorData::invalid_params(error, None))?;
+                let value = play::read_images(
+                    &client,
+                    &request.package_name,
+                    &request.locale,
+                    image_type,
+                )
+                .await
+                .map_err(|error| ::rmcp::model::ErrorData::internal_error(error, None))?;
+                Ok(::rmcp::model::CallToolResult::success(vec![
+                    ::rmcp::model::ContentBlock::json(&value)?,
+                ]))
+            }
+
+            #[::rmcp::tool(
+                name = $play_track_get_name,
+                title = "Get a Play track",
+                annotations(title = "Get a Play track", read_only_hint = true, idempotent_hint = true),
+                description = "Purpose: read a Google Play release track with its releases, version codes, status and per-language release notes. When to use vs siblings: use play_listing_list for store listing text and play_images_list for images. Behavior: opens a Play edit, reads the track and discards the edit. Prerequisites: a Google Play service account with access to the app, given as a key file at PLAY_SERVICE_ACCOUNT_JSON_PATH or inline in PLAY_SERVICE_ACCOUNT_JSON. Failure modes: missing credentials return an invalid-request error naming what is absent; Google Play errors are returned verbatim with their status. Limitations: read-only; setting release notes is available only through the asc play tracks set-notes command."
+            )]
+            async fn play_track_get(
+                &self,
+                parameters: ::rmcp::handler::server::wrapper::Parameters<$crate::PlayTrackGetRequest>,
+            ) -> ::std::result::Result<::rmcp::model::CallToolResult, ::rmcp::model::ErrorData> {
+                use ::smbcloud_ascapi_frontend::play;
+                let client = play::play_client(None)
+                    .map_err(|error| ::rmcp::model::ErrorData::invalid_request(error, None))?;
+                let request = parameters.0;
+                let value = play::read_track(&client, &request.package_name, &request.track)
+                    .await
+                    .map_err(|error| ::rmcp::model::ErrorData::internal_error(error, None))?;
+                Ok(::rmcp::model::CallToolResult::success(vec![
+                    ::rmcp::model::ContentBlock::json(&value)?,
                 ]))
             }
         }
