@@ -1,0 +1,20 @@
+[package]
+name = "smbcloud-ascapi-play"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Google Play Developer API (Edits v3): store listings, listing images, and track release notes, authenticated with a service account."
+readme = "README.md"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+jsonwebtoken = { workspace = true }
+reqwest = { workspace = true, features = ["json", "rustls-tls-native-roots"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time"] }
