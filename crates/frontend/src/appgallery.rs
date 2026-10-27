@@ -4,8 +4,10 @@
 use std::path::Path;
 
 use serde::Serialize;
+use smbcloud_ascapi_appgallery::upload::sha256_hex;
 use smbcloud_ascapi_appgallery::{
-    AppGalleryClient, AppInfoResponse, LanguageFields, LanguageInfo, ServiceAccount,
+    AppGalleryClient, AppInfo, AppInfoFields, AppInfoResponse, FileType, ImageOrientation,
+    LanguageFields, LanguageInfo, ServiceAccount,
 };
 
 /// Resolve the AppGallery client. `path` wins; then
@@ -151,9 +153,187 @@ pub async fn update_language(
     })
 }
 
+#[derive(Debug, Serialize)]
+pub struct BasicInfoUpdate {
+    pub dry_run: bool,
+    pub app_id: String,
+    pub sent: AppInfoFields,
+    /// Read back after the write; `None` on a dry run.
+    pub after: Option<AppInfo>,
+}
+
+/// Update basic information (privacy policy link and similar), then read the
+/// privacy link back.
+pub async fn update_basic_info(
+    client: &AppGalleryClient,
+    app: &str,
+    fields: AppInfoFields,
+    release_type: Option<u8>,
+    dry_run: bool,
+) -> Result<BasicInfoUpdate, String> {
+    fields.validate().map_err(err)?;
+    let app_id = resolve_app_id(client, app).await?;
+    if dry_run {
+        return Ok(BasicInfoUpdate {
+            dry_run,
+            app_id,
+            sent: fields,
+            after: None,
+        });
+    }
+    client
+        .update_app_info(&app_id, &fields, release_type)
+        .await
+        .map_err(err)?;
+    let after = client
+        .app_info(&app_id, None)
+        .await
+        .map_err(err)?
+        .app_info
+        .ok_or_else(|| "updated, but app info is missing on read-back".to_string())?;
+    if after.privacy_policy.as_deref() != Some(fields.privacy_policy.as_str()) {
+        return Err("updated, but the privacy policy differs on read-back".to_string());
+    }
+    Ok(BasicInfoUpdate {
+        dry_run,
+        app_id,
+        sent: fields,
+        after: Some(after),
+    })
+}
+
+/// Most screenshots AppGallery takes per language.
+pub const MAX_SCREENSHOTS: usize = 10;
+
+#[derive(Debug, Serialize)]
+pub struct PlannedFile {
+    pub path: String,
+    pub bytes: usize,
+    pub sha256: String,
+    /// The server's object id; `None` on a dry run.
+    pub object_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ImageUpload {
+    pub dry_run: bool,
+    pub app_id: String,
+    pub kind: &'static str,
+    pub lang: String,
+    pub files: Vec<PlannedFile>,
+}
+
+fn is_image(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| matches!(e.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg"))
+        .unwrap_or(false)
+}
+
+/// Upload an icon (exactly one file) or screenshots (in display order) and
+/// bind them to one language. With `dry_run` nothing is sent: the plan lists
+/// each file's size and hash. Uploads are sent with `chineseMainlandFlag=0`,
+/// matching the "not available in the Chinese mainland" decision.
+pub async fn upload_images(
+    client: &AppGalleryClient,
+    app: &str,
+    lang: &str,
+    kind: FileType,
+    orientation: Option<ImageOrientation>,
+    paths: &[std::path::PathBuf],
+    dry_run: bool,
+) -> Result<ImageUpload, String> {
+    let kind_name = match kind {
+        FileType::Icon => "icon",
+        FileType::Screenshots => "screenshots",
+        FileType::Package => return Err("use the package upload for APKs".to_string()),
+    };
+    if lang.is_empty() {
+        return Err("lang must not be empty".to_string());
+    }
+    if paths.is_empty() {
+        return Err("pass at least one image file".to_string());
+    }
+    if kind == FileType::Icon && paths.len() != 1 {
+        return Err("an icon is exactly one file".to_string());
+    }
+    if kind == FileType::Screenshots {
+        if paths.len() > MAX_SCREENSHOTS {
+            return Err(format!(
+                "at most {MAX_SCREENSHOTS} screenshots per language"
+            ));
+        }
+        if orientation.is_none() {
+            return Err("screenshots need --orientation portrait or landscape".to_string());
+        }
+    }
+    let mut loaded = Vec::new();
+    for path in paths {
+        if !is_image(path) {
+            return Err(format!("{} is not a PNG or JPEG file", path.display()));
+        }
+        let bytes = std::fs::read(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
+        loaded.push((path, bytes));
+    }
+    let app_id = resolve_app_id(client, app).await?;
+    let mut files: Vec<PlannedFile> = loaded
+        .iter()
+        .map(|(path, bytes)| PlannedFile {
+            path: path.display().to_string(),
+            bytes: bytes.len(),
+            sha256: sha256_hex(bytes),
+            object_id: None,
+        })
+        .collect();
+    if dry_run {
+        return Ok(ImageUpload {
+            dry_run,
+            app_id,
+            kind: kind_name,
+            lang: lang.to_string(),
+            files,
+        });
+    }
+    for ((path, bytes), planned) in loaded.into_iter().zip(files.iter_mut()) {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| format!("{} has no file name", path.display()))?;
+        let target = client
+            .upload_url(&app_id, name, &bytes, Some(false))
+            .await
+            .map_err(err)?;
+        client.put_upload(&target, bytes).await.map_err(err)?;
+        planned.object_id = Some(target.object_id);
+    }
+    let objects: Vec<(Option<&str>, &str)> = files
+        .iter()
+        .map(|f| (None, f.object_id.as_deref().unwrap_or_default()))
+        .collect();
+    client
+        .bind_files(&app_id, kind, Some(lang), orientation, &objects)
+        .await
+        .map_err(err)?;
+    Ok(ImageUpload {
+        dry_run,
+        app_id,
+        kind: kind_name,
+        lang: lang.to_string(),
+        files,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_png_and_jpeg_count_as_images() {
+        assert!(is_image(Path::new("a/icon.PNG")));
+        assert!(is_image(Path::new("shot.jpeg")));
+        assert!(!is_image(Path::new("notes.txt")));
+        assert!(!is_image(Path::new("noext")));
+    }
 
     #[test]
     fn differs_names_only_the_fields_that_were_sent_and_changed() {

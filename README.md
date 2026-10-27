@@ -58,7 +58,11 @@ asc appgallery app-id xyz.smbcloud.SiGit
 asc appgallery listings list xyz.smbcloud.SiGit --lang en-US
 asc appgallery listings update xyz.smbcloud.SiGit --lang en-US \
   --brief "Git client and code agent" --release-notes-file notes.txt --dry-run
+asc appgallery info update xyz.smbcloud.SiGit --privacy-policy https://example.com/privacy
+asc appgallery images upload <APP_ID> --lang en-US --kind icon icon-216.png
 ```
+
+Upload images before writing text: binding an image resets that language's text.
 
 ## Copyright
 

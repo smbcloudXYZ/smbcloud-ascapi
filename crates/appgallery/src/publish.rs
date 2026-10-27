@@ -28,7 +28,7 @@ pub struct RetCode {
 }
 
 impl RetCode {
-    fn check(self) -> Result<()> {
+    pub(crate) fn check(self) -> Result<()> {
         if self.code == 0 {
             Ok(())
         } else {
@@ -123,6 +123,53 @@ impl LanguageFields {
     }
 }
 
+/// The body of `PUT app-info`: basic information. Unset fields are left as
+/// they are, except `privacy_policy`, which the API always requires.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppInfoFields {
+    pub privacy_policy: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub developer_website: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub privacy_rights_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_agreement_url: Option<String>,
+}
+
+pub const PRIVACY_POLICY_MAX_LEN: usize = 255;
+pub const DEVELOPER_WEBSITE_MAX_LEN: usize = 255;
+pub const PRIVACY_RIGHTS_URL_MAX_LEN: usize = 256;
+pub const USER_AGREEMENT_URL_MAX_LEN: usize = 512;
+
+impl AppInfoFields {
+    pub fn validate(&self) -> Result<()> {
+        if self.privacy_policy.is_empty() {
+            return Err(Error::Missing("privacyPolicy"));
+        }
+        check_len(
+            "privacyPolicy",
+            &Some(self.privacy_policy.clone()),
+            PRIVACY_POLICY_MAX_LEN,
+        )?;
+        check_len(
+            "developerWebsite",
+            &self.developer_website,
+            DEVELOPER_WEBSITE_MAX_LEN,
+        )?;
+        check_len(
+            "privacyRightsUrl",
+            &self.privacy_rights_url,
+            PRIVACY_RIGHTS_URL_MAX_LEN,
+        )?;
+        check_len(
+            "userAgreementUrl",
+            &self.user_agreement_url,
+            USER_AGREEMENT_URL_MAX_LEN,
+        )
+    }
+}
+
 #[derive(Deserialize)]
 struct RetOnly {
     ret: RetCode,
@@ -150,7 +197,7 @@ pub struct AppIdPair {
     pub value: String,
 }
 
-fn parse_ret(bytes: &[u8]) -> Result<()> {
+pub(crate) fn parse_ret(bytes: &[u8]) -> Result<()> {
     serde_json::from_slice::<RetOnly>(bytes)?.ret.check()
 }
 
@@ -182,6 +229,27 @@ impl AppGalleryClient {
         }
         let bytes = self.send(Method::GET, &path, None).await?.bytes().await?;
         parse_app_info(&bytes)
+    }
+
+    /// Update basic app information (privacy policy link and similar).
+    pub async fn update_app_info(
+        &self,
+        app_id: &str,
+        fields: &AppInfoFields,
+        release_type: Option<u8>,
+    ) -> Result<()> {
+        fields.validate()?;
+        let mut path = format!("/publish/v2/app-info?appId={app_id}");
+        if let Some(release_type) = release_type {
+            path.push_str(&format!("&releaseType={release_type}"));
+        }
+        let body = serde_json::to_value(fields)?;
+        let bytes = self
+            .send(Method::PUT, &path, Some(&body))
+            .await?
+            .bytes()
+            .await?;
+        parse_ret(&bytes)
     }
 
     /// Update one language's text, or add the language when it is new.
@@ -285,6 +353,21 @@ mod tests {
         assert!(err.contains("204144660") && err.contains("no permission"));
         assert!(parse_app_info(br#"{"ret":{"code":1,"msg":"x"},"languages":[]}"#).is_err());
         assert!(parse_ret(br#"{"ret":{"code":0,"msg":"success"}}"#).is_ok());
+    }
+
+    #[test]
+    fn basic_info_needs_a_privacy_policy_and_names_its_fields() {
+        assert!(AppInfoFields::default().validate().is_err());
+        let fields = AppInfoFields {
+            privacy_policy: "https://sigit.si/privacy".into(),
+            developer_website: Some("https://sigit.si".into()),
+            ..Default::default()
+        };
+        assert!(fields.validate().is_ok());
+        assert_eq!(
+            serde_json::to_value(&fields).unwrap(),
+            serde_json::json!({"privacyPolicy":"https://sigit.si/privacy","developerWebsite":"https://sigit.si"})
+        );
     }
 
     #[test]

@@ -35,6 +35,12 @@ impl AppGalleryClient {
         self
     }
 
+    /// The underlying HTTP client, for the pre-signed upload `PUT`, which goes
+    /// to a storage host and carries its own signature rather than our JWT.
+    pub(crate) fn http(&self) -> &reqwest::Client {
+        &self.http
+    }
+
     /// The Service Account's key id, for diagnostics.
     pub fn key_id(&self) -> &str {
         &self.account.key_id

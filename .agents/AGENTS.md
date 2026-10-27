@@ -85,7 +85,13 @@ Endpoints sit under `https://connect-api.cloud.huawei.com/api`: `appid-list`,
 an error. The update limits (name 64, description 8000, brief 80, release
 notes 500) come from the update reference; the query reference documents 60
 and 1000 for brief and release notes, so the server has the last word.
-There are no MCP tools for it yet.
+Images and packages go through `GET upload-url/for-obs`, a `PUT` of the bytes
+to the pre-signed URL (our JWT is not sent there), then `PUT app-file-info` to
+bind the object id. Observed 2026-10-27: binding an icon with `lang` reset
+that language's name, description, brief and release notes to empty, so upload
+images first and write the text last, then read it back. `PUT app-info`
+needs `privacyPolicy` every time. Service Account mode needs no `client_id`
+header. There are no MCP tools for it yet.
 
 ## Git branching workflow
 

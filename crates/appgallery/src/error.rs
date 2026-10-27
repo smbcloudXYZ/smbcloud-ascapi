@@ -37,6 +37,19 @@ pub enum Error {
         max: usize,
     },
 
+    #[error("{0} is required")]
+    Missing(&'static str),
+
+    #[error("reading {path}: {source}")]
+    FileRead {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("the upload URL reply had no urlInfo")]
+    NoUploadUrl,
+
     #[error("lang must not be empty")]
     EmptyLang,
 }

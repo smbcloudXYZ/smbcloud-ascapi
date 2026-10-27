@@ -11,11 +11,13 @@ pub mod auth;
 pub mod client;
 pub mod error;
 pub mod publish;
+pub mod upload;
 
 pub use auth::ServiceAccount;
 pub use client::AppGalleryClient;
 pub use error::{Error, Result};
 pub use publish::{
-    AppIdPair, AppInfo, AppInfoResponse, LanguageFields, LanguageInfo, RetCode, APP_DESC_MAX_LEN,
-    APP_NAME_MAX_LEN, BRIEF_INFO_MAX_LEN, LANG_MAX_LEN, NEW_FEATURES_MAX_LEN,
+    AppIdPair, AppInfo, AppInfoFields, AppInfoResponse, LanguageFields, LanguageInfo, RetCode,
+    APP_DESC_MAX_LEN, APP_NAME_MAX_LEN, BRIEF_INFO_MAX_LEN, LANG_MAX_LEN, NEW_FEATURES_MAX_LEN,
 };
+pub use upload::{FileType, ImageOrientation, UploadUrl};

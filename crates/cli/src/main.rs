@@ -1,6 +1,9 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
-use smbcloud_ascapi_appgallery::LanguageFields as AppGalleryLanguageFields;
+use smbcloud_ascapi_appgallery::{
+    AppInfoFields as AppGalleryInfoFields, FileType as AppGalleryFileType,
+    ImageOrientation as AppGalleryOrientation, LanguageFields as AppGalleryLanguageFields,
+};
 use smbcloud_ascapi_aso::app::AppUpdateAttributes;
 use smbcloud_ascapi_aso::app_info_localization::{
     AppInfoLocalizationCreateAttributes, AppInfoLocalizationUpdateAttributes,
@@ -108,6 +111,67 @@ enum AppGalleryCommand {
     },
     /// Look up the AppGallery app id for a package name.
     AppId { package: String },
+    /// Basic information: privacy policy link and similar.
+    Info {
+        #[command(subcommand)]
+        command: AppGalleryInfoCommand,
+    },
+    /// Icon and screenshots for one language.
+    Images {
+        #[command(subcommand)]
+        command: AppGalleryImagesCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum AppGalleryInfoCommand {
+    /// Set the privacy policy link (required by the API) and, optionally,
+    /// the developer website and the privacy-rights and user-agreement URLs.
+    /// Reads the privacy link back. With `--dry-run` nothing is sent.
+    Update {
+        app: String,
+        #[arg(long)]
+        privacy_policy: String,
+        #[arg(long)]
+        developer_website: Option<String>,
+        /// URL where users can view, change and delete their personal data.
+        #[arg(long)]
+        privacy_rights_url: Option<String>,
+        #[arg(long)]
+        user_agreement_url: Option<String>,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum CliAppGalleryImageKind {
+    Icon,
+    Screenshots,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum CliAppGalleryOrientation {
+    Portrait,
+    Landscape,
+}
+
+#[derive(Subcommand)]
+enum AppGalleryImagesCommand {
+    /// Upload an icon (one file) or screenshots (in display order) and bind
+    /// them to a language. Sent with chineseMainlandFlag=0. With `--dry-run`
+    /// it lists each file's size and SHA-256 and sends nothing.
+    Upload {
+        app: String,
+        #[arg(long)]
+        lang: String,
+        #[arg(long, value_enum)]
+        kind: CliAppGalleryImageKind,
+        /// Required for screenshots.
+        #[arg(long, value_enum)]
+        orientation: Option<CliAppGalleryOrientation>,
+        /// PNG or JPEG files.
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -388,6 +452,62 @@ async fn run_appgallery(
                 .await
                 .map_err(|e| anyhow::anyhow!(e))?,
         ),
+        AppGalleryCommand::Info { command } => match command {
+            AppGalleryInfoCommand::Update {
+                app,
+                privacy_policy,
+                developer_website,
+                privacy_rights_url,
+                user_agreement_url,
+            } => {
+                let fields = AppGalleryInfoFields {
+                    privacy_policy,
+                    developer_website,
+                    privacy_rights_url,
+                    user_agreement_url,
+                };
+                let result = appgallery::update_basic_info(&client, &app, fields, None, dry_run)
+                    .await
+                    .map_err(fail)?;
+                if result.dry_run {
+                    println!("# dry run: nothing was sent; body that would be sent:");
+                }
+                print_json(&result)
+            }
+        },
+        AppGalleryCommand::Images { command } => match command {
+            AppGalleryImagesCommand::Upload {
+                app,
+                lang,
+                kind,
+                orientation,
+                files,
+            } => {
+                let kind = match kind {
+                    CliAppGalleryImageKind::Icon => AppGalleryFileType::Icon,
+                    CliAppGalleryImageKind::Screenshots => AppGalleryFileType::Screenshots,
+                };
+                let orientation = orientation.map(|o| match o {
+                    CliAppGalleryOrientation::Portrait => AppGalleryOrientation::Portrait,
+                    CliAppGalleryOrientation::Landscape => AppGalleryOrientation::Landscape,
+                });
+                let result = appgallery::upload_images(
+                    &client,
+                    &app,
+                    &lang,
+                    kind,
+                    orientation,
+                    &files,
+                    dry_run,
+                )
+                .await
+                .map_err(fail)?;
+                if result.dry_run {
+                    println!("# dry run: nothing was uploaded; files that would be sent:");
+                }
+                print_json(&result)
+            }
+        },
         AppGalleryCommand::Listings { command } => match command {
             AppGalleryListingsCommand::List { app, lang } => print_json(
                 &appgallery::read_listings(&client, &app, lang.as_deref())
