@@ -1,0 +1,23 @@
+[package]
+name = "smbcloud-ascapi-appgallery"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Huawei AppGallery Connect API: Service Account (PS256 JWT) authentication and the HTTP client the Publishing API calls build on."
+readme = "README.md"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+jsonwebtoken = { workspace = true }
+reqwest = { workspace = true, features = ["json", "rustls-tls-native-roots"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+rand = { workspace = true }
+rsa = { workspace = true, features = ["pem"] }
