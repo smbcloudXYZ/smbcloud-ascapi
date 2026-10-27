@@ -72,7 +72,10 @@ macro_rules! ascapi_mcp_tools {
         $beta_app_review_detail_get_name:literal,
         $play_listing_list_name:literal,
         $play_images_list_name:literal,
-        $play_track_get_name:literal
+        $play_track_get_name:literal,
+        $appgallery_app_info_get_name:literal,
+        $appgallery_package_list_name:literal,
+        $appgallery_package_status_name:literal
     ) => {
         #[::rmcp::tool_router(router = ascapi_tool_router, vis = "pub(crate)")]
         impl $server {
@@ -1035,6 +1038,72 @@ macro_rules! ascapi_mcp_tools {
                     .map_err(|error| ::rmcp::model::ErrorData::invalid_request(error, None))?;
                 let request = parameters.0;
                 let value = play::read_track(&client, &request.package_name, &request.track)
+                    .await
+                    .map_err(|error| ::rmcp::model::ErrorData::internal_error(error, None))?;
+                Ok(::rmcp::model::CallToolResult::success(vec![
+                    ::rmcp::model::ContentBlock::json(&value)?,
+                ]))
+            }
+
+            #[::rmcp::tool(
+                name = $appgallery_app_info_get_name,
+                title = "Get AppGallery app info",
+                annotations(title = "Get AppGallery app info", read_only_hint = true, idempotent_hint = true),
+                description = "Purpose: read a Huawei AppGallery app's basic information (release state, default language, privacy link, countries, categories and more), its per-language listing text and assets, the reviewer's comment and any phased release. When to use vs siblings: use this for the listing; appgallery_package_list lists uploaded packages and appgallery_package_status says whether they parsed. Behavior: GET app-info, nothing changes. The app is a numeric app id or a package name, which is resolved through appid-list (a package is only known after its first APK upload). Prerequisites: an AppGallery Connect Service Account credential file (developer-level, with a role that may publish) at APPGALLERY_SERVICE_ACCOUNT_JSON_PATH or its contents in APPGALLERY_SERVICE_ACCOUNT_JSON; APPGALLERY_CLIENT_ID is optional. Failure modes: missing credentials return an invalid-request error naming what is absent; a non-zero AppGallery result code or HTTP error is returned verbatim. Limitations: read-only; changes go through the asc appgallery listings, info and files commands."
+            )]
+            async fn appgallery_app_info_get(
+                &self,
+                parameters: ::rmcp::handler::server::wrapper::Parameters<$crate::AppGalleryAppInfoRequest>,
+            ) -> ::std::result::Result<::rmcp::model::CallToolResult, ::rmcp::model::ErrorData> {
+                use ::smbcloud_ascapi_frontend::appgallery;
+                let client = appgallery::appgallery_client(None, None)
+                    .map_err(|error| ::rmcp::model::ErrorData::invalid_request(error, None))?;
+                let request = parameters.0;
+                let value = appgallery::read_listings(&client, &request.app, request.lang.as_deref())
+                    .await
+                    .map_err(|error| ::rmcp::model::ErrorData::internal_error(error, None))?;
+                Ok(::rmcp::model::CallToolResult::success(vec![
+                    ::rmcp::model::ContentBlock::json(&value)?,
+                ]))
+            }
+
+            #[::rmcp::tool(
+                name = $appgallery_package_list_name,
+                title = "List AppGallery packages",
+                annotations(title = "List AppGallery packages", read_only_hint = true, idempotent_hint = true),
+                description = "Purpose: list the packages (APKs) uploaded for a Huawei AppGallery app with their package id, version code and name, size, upload time and SHA-256. When to use vs siblings: use this to find a package id for appgallery_package_status; appgallery_app_info_get reads the listing. Behavior: GET package-list, nothing changes; max is capped at 100. Prerequisites: an AppGallery Connect Service Account credential file (developer-level, with a role that may publish) at APPGALLERY_SERVICE_ACCOUNT_JSON_PATH or its contents in APPGALLERY_SERVICE_ACCOUNT_JSON; APPGALLERY_CLIENT_ID is optional. Failure modes: missing credentials return an invalid-request error naming what is absent; a non-zero AppGallery result code or HTTP error is returned verbatim. Limitations: read-only; uploading goes through asc appgallery files upload --type package."
+            )]
+            async fn appgallery_package_list(
+                &self,
+                parameters: ::rmcp::handler::server::wrapper::Parameters<$crate::AppGalleryPackageListRequest>,
+            ) -> ::std::result::Result<::rmcp::model::CallToolResult, ::rmcp::model::ErrorData> {
+                use ::smbcloud_ascapi_frontend::appgallery;
+                let client = appgallery::appgallery_client(None, None)
+                    .map_err(|error| ::rmcp::model::ErrorData::invalid_request(error, None))?;
+                let request = parameters.0;
+                let value = appgallery::package_list(&client, &request.app, request.from, request.max)
+                    .await
+                    .map_err(|error| ::rmcp::model::ErrorData::internal_error(error, None))?;
+                Ok(::rmcp::model::CallToolResult::success(vec![
+                    ::rmcp::model::ContentBlock::json(&value)?,
+                ]))
+            }
+
+            #[::rmcp::tool(
+                name = $appgallery_package_status_name,
+                title = "Get AppGallery package status",
+                annotations(title = "Get AppGallery package status", read_only_hint = true, idempotent_hint = true),
+                description = "Purpose: say whether uploaded Huawei AppGallery packages parsed: successStatus 0 normal, 1 parsing, 2 failed (unusable). When to use vs siblings: call after an upload and before submitting; appgallery_package_list supplies the package ids. Behavior: GET package/compile/status, nothing changes. Prerequisites: an AppGallery Connect Service Account credential file (developer-level, with a role that may publish) at APPGALLERY_SERVICE_ACCOUNT_JSON_PATH or its contents in APPGALLERY_SERVICE_ACCOUNT_JSON; APPGALLERY_CLIENT_ID is optional. Failure modes: missing credentials return an invalid-request error naming what is absent; a non-zero AppGallery result code or HTTP error is returned verbatim. Limitations: read-only; packages parse asynchronously, so wait about two minutes after an upload."
+            )]
+            async fn appgallery_package_status(
+                &self,
+                parameters: ::rmcp::handler::server::wrapper::Parameters<$crate::AppGalleryPackageStatusRequest>,
+            ) -> ::std::result::Result<::rmcp::model::CallToolResult, ::rmcp::model::ErrorData> {
+                use ::smbcloud_ascapi_frontend::appgallery;
+                let client = appgallery::appgallery_client(None, None)
+                    .map_err(|error| ::rmcp::model::ErrorData::invalid_request(error, None))?;
+                let request = parameters.0;
+                let value = appgallery::package_status(&client, &request.app, &request.pkg_ids)
                     .await
                     .map_err(|error| ::rmcp::model::ErrorData::internal_error(error, None))?;
                 Ok(::rmcp::model::CallToolResult::success(vec![
