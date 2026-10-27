@@ -3,6 +3,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use smbcloud_ascapi_appgallery::{
     AppInfoFields as AppGalleryInfoFields, FileType as AppGalleryFileType,
     ImageOrientation as AppGalleryOrientation, LanguageFields as AppGalleryLanguageFields,
+    PhasedRelease as AppGalleryPhasedRelease, ReleaseTimeChange as AppGalleryReleaseTimeChange,
+    Submit as AppGallerySubmit,
 };
 use smbcloud_ascapi_aso::app::AppUpdateAttributes;
 use smbcloud_ascapi_aso::app_info_localization::{
@@ -99,53 +101,237 @@ enum PlayCommand {
     },
 }
 
-// `Listings` carries the nested update command with its many text flags; boxing
-// a clap subcommand field is not possible.
+// The update commands carry many flags; boxing a clap subcommand field is not
+// possible.
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum AppGalleryCommand {
+    /// Look up the AppGallery app id for a package name.
+    AppId { package: String },
     /// Localized listing text: name, description, brief and release notes.
     Listings {
         #[command(subcommand)]
         command: AppGalleryListingsCommand,
     },
-    /// Look up the AppGallery app id for a package name.
-    AppId { package: String },
-    /// Basic information: privacy policy link and similar.
+    /// Basic information: privacy links, category, countries, price and flags.
     Info {
         #[command(subcommand)]
         command: AppGalleryInfoCommand,
     },
-    /// Icon and screenshots for one language.
-    Images {
+    /// Upload and bind files: icon, screenshots, videos, promo images,
+    /// certificates, VR assets, or the APK/AAB/RPK.
+    #[command(alias = "images")]
+    Files {
         #[command(subcommand)]
-        command: AppGalleryImagesCommand,
+        command: AppGalleryFilesCommand,
     },
+    /// Uploaded packages and whether they parsed.
+    Packages {
+        #[command(subcommand)]
+        command: AppGalleryPackagesCommand,
+    },
+    /// Report whether the app depends on Google Mobile Services.
+    Gms {
+        app: String,
+        /// true if the app needs GMS, false if it runs without it.
+        #[arg(long, action = clap::ArgAction::Set)]
+        needs_gms: bool,
+    },
+    /// Submit the app for review. Once approved it goes live (at
+    /// --release-time if given). Check everything with --dry-run first.
+    Submit {
+        app: String,
+        /// yyyy-MM-ddTHH:mm:ss+HHMM; released right after approval when unset.
+        #[arg(long)]
+        release_time: Option<String>,
+        /// Note for the reviewer, 10-300 characters.
+        #[arg(long, conflicts_with = "remark_file")]
+        remark: Option<String>,
+        #[arg(long)]
+        remark_file: Option<PathBuf>,
+        #[command(flatten)]
+        phased: PhasedArgs,
+    },
+    /// Change a running phased release, or turn it into a full release.
+    PhasedRelease {
+        app: String,
+        /// Release to the entire network instead; ignores the other flags.
+        #[arg(long)]
+        to_full: bool,
+        /// SUSPEND or RELEASE.
+        #[arg(long)]
+        state: Option<String>,
+        #[command(flatten)]
+        phased: PhasedArgs,
+    },
+    /// Change when a version in Releasing state goes live.
+    ReleaseTime {
+        app: String,
+        #[arg(long, conflicts_with = "at", required_unless_present = "at")]
+        immediately: bool,
+        /// yyyy-MM-ddTHH:mm:ss+HHMM
+        #[arg(long)]
+        at: Option<String>,
+    },
+}
+
+/// The phased-release window. Setting any of these on `submit` makes it a
+/// phased release, which needs a version already released.
+#[derive(clap::Args)]
+struct PhasedArgs {
+    /// yyyy-MM-ddTHH:mm:ss+HHMM
+    #[arg(long)]
+    phased_start: Option<String>,
+    /// yyyy-MM-ddTHH:mm:ss+HHMM
+    #[arg(long)]
+    phased_end: Option<String>,
+    /// 0.00-100.00, no percent sign.
+    #[arg(long)]
+    phased_percent: Option<String>,
+    /// Up to 500 characters.
+    #[arg(long)]
+    phased_description: Option<String>,
+}
+
+impl PhasedArgs {
+    fn into_release(self, state: Option<String>) -> Option<AppGalleryPhasedRelease> {
+        let any = self.phased_start.is_some()
+            || self.phased_end.is_some()
+            || self.phased_percent.is_some()
+            || self.phased_description.is_some()
+            || state.is_some();
+        any.then_some(AppGalleryPhasedRelease {
+            state,
+            phased_release_start_time: self.phased_start,
+            phased_release_end_time: self.phased_end,
+            phased_release_percent: self.phased_percent,
+            phased_release_description: self.phased_description,
+        })
+    }
 }
 
 #[derive(Subcommand)]
 enum AppGalleryInfoCommand {
-    /// Set the privacy policy link (required by the API) and, optionally,
-    /// the developer website and the privacy-rights and user-agreement URLs.
-    /// Reads the privacy link back. With `--dry-run` nothing is sent.
+    /// Update basic information. The API needs --privacy-policy on every
+    /// call; every other flag is left unchanged when omitted. Reads the
+    /// privacy link back. With `--dry-run` nothing is sent.
     Update {
         app: String,
         #[arg(long)]
         privacy_policy: String,
+        /// Default language, e.g. en-US.
+        #[arg(long)]
+        default_lang: Option<String>,
+        /// Level-2 category id, e.g. 10000000 (Tools).
+        #[arg(long)]
+        category: Option<u32>,
+        /// Level-3 category (tag) id, e.g. 15000005.
+        #[arg(long)]
+        category_tag: Option<u32>,
+        /// Comma-separated country/region codes. Leave CN out to keep the
+        /// app off the Chinese mainland.
+        #[arg(long)]
+        publish_country: Option<String>,
+        /// 1 free, 0 paid (needs --price and --price-detail). Fixed after release.
+        #[arg(long)]
+        is_free: Option<u8>,
+        /// {"countryCode":"price"}
+        #[arg(long)]
+        price: Option<String>,
+        /// JSON array of {country, currency, price}.
+        #[arg(long)]
+        price_detail: Option<String>,
+        /// Comma-separated in-app purchase types (1 activation ... 8 membership).
+        #[arg(long)]
+        tariff_type: Option<String>,
         #[arg(long)]
         developer_website: Option<String>,
-        /// URL where users can view, change and delete their personal data.
+        /// URL where users view, change and delete their personal data.
         #[arg(long)]
         privacy_rights_url: Option<String>,
         #[arg(long)]
         user_agreement_url: Option<String>,
+        /// JSON, e.g. [{"deviceType":4,"appAdapters":"4,5"}] (4 phone, 5 tablet).
+        #[arg(long)]
+        device_types: Option<String>,
+        /// 0 or 1.
+        #[arg(long)]
+        forced_update: Option<u8>,
+        /// 0 or 1: let AppGallery fetch the package from the Internet.
+        #[arg(long)]
+        auto_download: Option<u8>,
+        /// 0 or 1.
+        #[arg(long)]
+        family_share: Option<u8>,
+        /// 0 or 1; the API defaults to 1.
+        #[arg(long)]
+        encrypted: Option<u8>,
+        /// Games: 1 standalone, 2 online.
+        #[arg(long)]
+        net_type: Option<u8>,
+        /// Games: 0 or 1.
+        #[arg(long)]
+        web_game: Option<u8>,
+        /// Games: publication approval number.
+        #[arg(long)]
+        publication_number: Option<String>,
+        /// Games, China only: Internet culture operation license number.
+        #[arg(long)]
+        culture_record_number: Option<String>,
+        /// Trustlisted developers only.
+        #[arg(long)]
+        developer_name_cn: Option<String>,
+        /// Trustlisted developers only.
+        #[arg(long)]
+        developer_name_en: Option<String>,
     },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
-enum CliAppGalleryImageKind {
+enum CliAppGalleryFileType {
     Icon,
     Screenshots,
+    IntroVideo,
+    PromoVideo,
+    PromoImage,
+    Package,
+    AgentCertificate,
+    ElectronicCertificate,
+    CultureLicenseScreenshot,
+    CultureLicense,
+    VrCover,
+    VrScreenshots,
+    VrPromoImage,
+    VrCoverLayered,
+    #[value(name = "vr-promo-4x3")]
+    VrPromo4x3,
+    #[value(name = "vr-promo-1x1")]
+    VrPromo1x1,
+    VrPanorama,
+}
+
+impl From<CliAppGalleryFileType> for AppGalleryFileType {
+    fn from(value: CliAppGalleryFileType) -> Self {
+        match value {
+            CliAppGalleryFileType::Icon => Self::Icon,
+            CliAppGalleryFileType::Screenshots => Self::Screenshots,
+            CliAppGalleryFileType::IntroVideo => Self::IntroVideo,
+            CliAppGalleryFileType::PromoVideo => Self::PromoVideo,
+            CliAppGalleryFileType::PromoImage => Self::PromoImage,
+            CliAppGalleryFileType::Package => Self::Package,
+            CliAppGalleryFileType::AgentCertificate => Self::AgentCertificate,
+            CliAppGalleryFileType::ElectronicCertificate => Self::ElectronicCertificate,
+            CliAppGalleryFileType::CultureLicenseScreenshot => Self::CultureLicenseScreenshot,
+            CliAppGalleryFileType::CultureLicense => Self::CultureLicense,
+            CliAppGalleryFileType::VrCover => Self::VrCover,
+            CliAppGalleryFileType::VrScreenshots => Self::VrScreenshots,
+            CliAppGalleryFileType::VrPromoImage => Self::VrPromoImage,
+            CliAppGalleryFileType::VrCoverLayered => Self::VrCoverLayered,
+            CliAppGalleryFileType::VrPromo4x3 => Self::VrPromo4x3,
+            CliAppGalleryFileType::VrPromo1x1 => Self::VrPromo1x1,
+            CliAppGalleryFileType::VrPanorama => Self::VrPanorama,
+        }
+    }
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -154,30 +340,73 @@ enum CliAppGalleryOrientation {
     Landscape,
 }
 
+impl From<CliAppGalleryOrientation> for AppGalleryOrientation {
+    fn from(value: CliAppGalleryOrientation) -> Self {
+        match value {
+            CliAppGalleryOrientation::Portrait => Self::Portrait,
+            CliAppGalleryOrientation::Landscape => Self::Landscape,
+        }
+    }
+}
+
 #[derive(Subcommand)]
-enum AppGalleryImagesCommand {
-    /// Upload an icon (one file) or screenshots (in display order) and bind
-    /// them to a language. Sent with chineseMainlandFlag=0. With `--dry-run`
-    /// it lists each file's size and SHA-256 and sends nothing.
+enum AppGalleryFilesCommand {
+    /// Upload files of one type, in display order, and bind them. Images
+    /// and videos need --lang; that language's text is checked and written
+    /// back if binding cleared it. With `--dry-run` it lists each file's size
+    /// and SHA-256 and sends nothing.
     Upload {
         app: String,
+        #[arg(long = "type", alias = "kind", value_enum)]
+        file_type: CliAppGalleryFileType,
         #[arg(long)]
-        lang: String,
-        #[arg(long, value_enum)]
-        kind: CliAppGalleryImageKind,
-        /// Required for screenshots.
+        lang: Option<String>,
+        /// Screenshots: portrait or landscape.
         #[arg(long, value_enum)]
         orientation: Option<CliAppGalleryOrientation>,
-        /// PNG or JPEG files.
+        /// Videos: portrait or landscape.
+        #[arg(long, value_enum)]
+        video_orientation: Option<CliAppGalleryOrientation>,
+        /// Packages: sensitive permission description.
+        #[arg(long)]
+        sensitive_permission_desc: Option<String>,
+        /// Device type for visual assets on a multi-device app (4 phone).
+        #[arg(long)]
+        device_type: Option<u8>,
+        /// Distribute the package to the Chinese mainland. Off by default.
+        #[arg(long)]
+        chinese_mainland: bool,
+        /// The files. Videos alternate with their posters: video, poster, ...
         #[arg(required = true)]
         files: Vec<PathBuf>,
     },
 }
 
 #[derive(Subcommand)]
+enum AppGalleryPackagesCommand {
+    /// Packages uploaded for the app, newest first.
+    List {
+        app: String,
+        /// First record, from 1.
+        #[arg(long)]
+        from: Option<u32>,
+        /// Up to 100 (the API's default is 10).
+        #[arg(long)]
+        max: Option<u32>,
+    },
+    /// Parse status of packages: 0 normal, 1 parsing, 2 failed.
+    Status {
+        app: String,
+        /// Package ids (pkgVersion from `packages list` or the upload).
+        #[arg(required = true)]
+        pkg_ids: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum AppGalleryListingsCommand {
-    /// App info and every language's text, or one language's. `APP` is the
-    /// numeric app id or the package name.
+    /// App info and every language's text and assets, or one language's.
+    /// `APP` is the numeric app id or the package name.
     List {
         app: String,
         #[arg(long)]
@@ -214,6 +443,12 @@ enum AppGalleryListingsCommand {
         /// 1 for the entire network (default) or 3 for a phased release.
         #[arg(long, value_parser = clap::value_parser!(u8).range(1..=3))]
         release_type: Option<u8>,
+    },
+    /// Delete one language's listing. The default language cannot be deleted.
+    Delete {
+        app: String,
+        #[arg(long)]
+        lang: String,
     },
 }
 
@@ -445,6 +680,11 @@ async fn run_appgallery(
     let client = appgallery::appgallery_client(service_account, client_id)
         .map_err(|e| anyhow::anyhow!(e))?;
     let fail = |e: String| anyhow::anyhow!(e);
+    let flag = |label: &str, dry: bool| {
+        if dry {
+            println!("# dry run: nothing was sent; {label}:");
+        }
+    };
     match command {
         AppGalleryCommand::AppId { package } => print_json(
             &client
@@ -456,58 +696,166 @@ async fn run_appgallery(
             AppGalleryInfoCommand::Update {
                 app,
                 privacy_policy,
+                default_lang,
+                category,
+                category_tag,
+                publish_country,
+                is_free,
+                price,
+                price_detail,
+                tariff_type,
                 developer_website,
                 privacy_rights_url,
                 user_agreement_url,
+                device_types,
+                forced_update,
+                auto_download,
+                family_share,
+                encrypted,
+                net_type,
+                web_game,
+                publication_number,
+                culture_record_number,
+                developer_name_cn,
+                developer_name_en,
             } => {
+                let device_types = device_types
+                    .map(|json| serde_json::from_str(&json))
+                    .transpose()
+                    .context("--device-types must be JSON")?;
                 let fields = AppGalleryInfoFields {
                     privacy_policy,
+                    default_lang,
+                    child_type: category,
+                    grand_child_type: category_tag,
+                    app_net_type: net_type,
+                    is_free,
+                    price,
+                    price_detail,
+                    publish_country,
+                    is_app_forced_update: forced_update,
+                    hispace_auto_down: auto_download,
+                    app_tariff_type: tariff_type,
+                    publication_number,
+                    culture_record_number,
+                    developer_name_cn,
+                    developer_name_en,
                     developer_website,
+                    family_share_tag: family_share,
+                    device_types,
+                    web_game_flag: web_game,
                     privacy_rights_url,
                     user_agreement_url,
+                    encrypted,
                 };
                 let result = appgallery::update_basic_info(&client, &app, fields, None, dry_run)
                     .await
                     .map_err(fail)?;
-                if result.dry_run {
-                    println!("# dry run: nothing was sent; body that would be sent:");
-                }
+                flag("body that would be sent", result.dry_run);
                 print_json(&result)
             }
         },
-        AppGalleryCommand::Images { command } => match command {
-            AppGalleryImagesCommand::Upload {
+        AppGalleryCommand::Files { command } => match command {
+            AppGalleryFilesCommand::Upload {
                 app,
+                file_type,
                 lang,
-                kind,
                 orientation,
+                video_orientation,
+                sensitive_permission_desc,
+                device_type,
+                chinese_mainland,
                 files,
             } => {
-                let kind = match kind {
-                    CliAppGalleryImageKind::Icon => AppGalleryFileType::Icon,
-                    CliAppGalleryImageKind::Screenshots => AppGalleryFileType::Screenshots,
+                let options = appgallery::UploadOptions {
+                    lang,
+                    image_orientation: orientation.map(Into::into),
+                    video_orientation: video_orientation.map(Into::into),
+                    sensitive_permission_desc,
+                    device_type,
+                    chinese_mainland,
                 };
-                let orientation = orientation.map(|o| match o {
-                    CliAppGalleryOrientation::Portrait => AppGalleryOrientation::Portrait,
-                    CliAppGalleryOrientation::Landscape => AppGalleryOrientation::Landscape,
-                });
-                let result = appgallery::upload_images(
+                let result = appgallery::upload_files(
                     &client,
                     &app,
-                    &lang,
-                    kind,
-                    orientation,
+                    file_type.into(),
                     &files,
+                    &options,
                     dry_run,
                 )
                 .await
                 .map_err(fail)?;
-                if result.dry_run {
-                    println!("# dry run: nothing was uploaded; files that would be sent:");
-                }
+                flag("files that would be uploaded", result.dry_run);
                 print_json(&result)
             }
         },
+        AppGalleryCommand::Packages { command } => match command {
+            AppGalleryPackagesCommand::List { app, from, max } => print_json(
+                &appgallery::package_list(&client, &app, from, max)
+                    .await
+                    .map_err(fail)?,
+            ),
+            AppGalleryPackagesCommand::Status { app, pkg_ids } => print_json(
+                &appgallery::package_status(&client, &app, &pkg_ids)
+                    .await
+                    .map_err(fail)?,
+            ),
+        },
+        AppGalleryCommand::Gms { app, needs_gms } => {
+            let result = appgallery::set_gms_dependency(&client, &app, needs_gms, dry_run)
+                .await
+                .map_err(fail)?;
+            flag("body that would be sent", result.dry_run);
+            print_json(&result)
+        }
+        AppGalleryCommand::Submit {
+            app,
+            release_time,
+            remark,
+            remark_file,
+            phased,
+        } => {
+            let options = AppGallerySubmit {
+                release_time,
+                remark: text_arg(remark, remark_file, "--remark-file")?,
+                phased: phased.into_release(None),
+            };
+            let result = appgallery::submit(&client, &app, options, dry_run)
+                .await
+                .map_err(fail)?;
+            flag("submission that would be sent", result.dry_run);
+            print_json(&result)
+        }
+        AppGalleryCommand::PhasedRelease {
+            app,
+            to_full,
+            state,
+            phased,
+        } => {
+            let release = phased.into_release(state).unwrap_or_default();
+            let result =
+                appgallery::update_phased_release(&client, &app, release, to_full, dry_run)
+                    .await
+                    .map_err(fail)?;
+            flag("body that would be sent", result.dry_run);
+            print_json(&result)
+        }
+        AppGalleryCommand::ReleaseTime {
+            app,
+            immediately,
+            at,
+        } => {
+            let change = match (immediately, at) {
+                (true, _) => AppGalleryReleaseTimeChange::Immediately,
+                (false, Some(at)) => AppGalleryReleaseTimeChange::At(at),
+                (false, None) => anyhow::bail!("pass --immediately or --at"),
+            };
+            let result = appgallery::update_release_time(&client, &app, change, dry_run)
+                .await
+                .map_err(fail)?;
+            flag("body that would be sent", result.dry_run);
+            print_json(&result)
+        }
         AppGalleryCommand::Listings { command } => match command {
             AppGalleryListingsCommand::List { app, lang } => print_json(
                 &appgallery::read_listings(&client, &app, lang.as_deref())
@@ -542,9 +890,13 @@ async fn run_appgallery(
                     appgallery::update_language(&client, &app, fields, release_type, dry_run)
                         .await
                         .map_err(fail)?;
-                if result.dry_run {
-                    println!("# dry run: nothing was sent; body that would be sent:");
-                }
+                flag("body that would be sent", result.dry_run);
+                print_json(&result)
+            }
+            AppGalleryListingsCommand::Delete { app, lang } => {
+                let result = appgallery::delete_language(&client, &app, &lang, dry_run)
+                    .await
+                    .map_err(fail)?;
                 print_json(&result)
             }
         },

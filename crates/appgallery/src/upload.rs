@@ -9,24 +9,82 @@ use sha2::{Digest, Sha256};
 
 use crate::client::AppGalleryClient;
 use crate::error::{Error, Result};
-use crate::publish::parse_ret;
 
-/// `fileType` in `PUT app-file-info`; only the kinds this crate uploads.
+/// `fileType` in `PUT app-file-info`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileType {
+    /// 0
     Icon,
+    /// 1: up to three introduction videos, each followed by its poster.
+    IntroVideo,
+    /// 2
     Screenshots,
-    /// An APK, AAB or RPK.
+    /// 3: a promotion video followed by its poster.
+    PromoVideo,
+    /// 4
+    PromoImage,
+    /// 5: an APK, AAB or RPK.
     Package,
+    /// 6: agent certificate or agent copyright image.
+    AgentCertificate,
+    /// 7: electronic certificate PDF, up to 5 MB.
+    ElectronicCertificate,
+    /// 8: Internet culture operation license screenshot (China only).
+    CultureLicenseScreenshot,
+    /// 9: Internet culture operation license image or PDF (games only).
+    CultureLicense,
+    /// 10
+    VrCover,
+    /// 11
+    VrScreenshots,
+    /// 12
+    VrPromoImage,
+    /// 13
+    VrCoverLayered,
+    /// 14
+    VrPromo4x3,
+    /// 15
+    VrPromo1x1,
+    /// 16
+    VrPanorama,
 }
 
 impl FileType {
+    pub const ALL: [FileType; 17] = [
+        Self::Icon,
+        Self::IntroVideo,
+        Self::Screenshots,
+        Self::PromoVideo,
+        Self::PromoImage,
+        Self::Package,
+        Self::AgentCertificate,
+        Self::ElectronicCertificate,
+        Self::CultureLicenseScreenshot,
+        Self::CultureLicense,
+        Self::VrCover,
+        Self::VrScreenshots,
+        Self::VrPromoImage,
+        Self::VrCoverLayered,
+        Self::VrPromo4x3,
+        Self::VrPromo1x1,
+        Self::VrPanorama,
+    ];
+
     pub fn code(self) -> u8 {
-        match self {
-            Self::Icon => 0,
-            Self::Screenshots => 2,
-            Self::Package => 5,
-        }
+        Self::ALL.iter().position(|t| *t == self).unwrap_or(0) as u8
+    }
+
+    /// Images and videos belong to a language; packages and certificates
+    /// do not.
+    pub fn needs_lang(self) -> bool {
+        !matches!(
+            self,
+            Self::Package
+                | Self::AgentCertificate
+                | Self::ElectronicCertificate
+                | Self::CultureLicenseScreenshot
+                | Self::CultureLicense
+        )
     }
 }
 
@@ -92,7 +150,45 @@ struct FileInfoBody<'a> {
     lang: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     img_show_type: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    video_show_type: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sensitive_permission_desc: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_type: Option<u8>,
     files: Vec<FileEntry<'a>>,
+}
+
+/// What `PUT app-file-info` binds. `files` pairs an optional file name
+/// (packages need it) with the object id from [`UploadUrl`], in order.
+#[derive(Debug, Clone)]
+pub struct FileBind<'a> {
+    pub file_type: FileType,
+    /// Required for images and videos.
+    pub lang: Option<&'a str>,
+    /// Required for screenshots.
+    pub image_orientation: Option<ImageOrientation>,
+    /// Required for videos.
+    pub video_orientation: Option<ImageOrientation>,
+    pub sensitive_permission_desc: Option<&'a str>,
+    /// Needed for visual assets when the app supports several device types
+    /// (4 phone, 6 VR, 7 watch, 8 Vision, 9 router, 10 car).
+    pub device_type: Option<u8>,
+    pub files: Vec<(Option<&'a str>, &'a str)>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BindEnvelope {
+    ret: crate::publish::RetCode,
+    #[serde(default)]
+    pkg_version: Vec<String>,
+}
+
+fn parse_bind(bytes: &[u8]) -> Result<Vec<String>> {
+    let envelope: BindEnvelope = serde_json::from_slice(bytes)?;
+    envelope.ret.check()?;
+    Ok(envelope.pkg_version)
 }
 
 impl AppGalleryClient {
@@ -142,22 +238,37 @@ impl AppGalleryClient {
         }
     }
 
-    /// `PUT app-file-info`: bind uploaded objects to the app. `lang` is
-    /// required for images; `orientation` for screenshots. `files` pairs an
-    /// optional file name (packages need it) with the object id.
-    pub async fn bind_files(
-        &self,
-        app_id: &str,
-        file_type: FileType,
-        lang: Option<&str>,
-        orientation: Option<ImageOrientation>,
-        files: &[(Option<&str>, &str)],
-    ) -> Result<()> {
+    /// `PUT app-file-info`: bind uploaded objects to the app. Returns the
+    /// package id (`pkgVersion`) when a package was added. Binding an image
+    /// or video for a language resets that language's text (seen
+    /// 2026-10-27), so write text after images.
+    pub async fn bind_files(&self, app_id: &str, bind: &FileBind<'_>) -> Result<Vec<String>> {
+        if bind.files.is_empty() {
+            return Err(Error::Missing("files"));
+        }
+        if bind.file_type.needs_lang() && bind.lang.is_none() {
+            return Err(Error::Missing("lang"));
+        }
+        if bind.file_type == FileType::Screenshots && bind.image_orientation.is_none() {
+            return Err(Error::Missing("imgShowType"));
+        }
+        if matches!(bind.file_type, FileType::IntroVideo | FileType::PromoVideo)
+            && bind.video_orientation.is_none()
+        {
+            return Err(Error::Missing("videoShowType"));
+        }
+        if bind.file_type == FileType::Package && bind.files.iter().any(|(n, _)| n.is_none()) {
+            return Err(Error::Missing("fileName"));
+        }
         let body = serde_json::to_value(FileInfoBody {
-            file_type: file_type.code(),
-            lang,
-            img_show_type: orientation.map(ImageOrientation::code),
-            files: files
+            file_type: bind.file_type.code(),
+            lang: bind.lang,
+            img_show_type: bind.image_orientation.map(ImageOrientation::code),
+            video_show_type: bind.video_orientation.map(ImageOrientation::code),
+            sensitive_permission_desc: bind.sensitive_permission_desc,
+            device_type: bind.device_type,
+            files: bind
+                .files
                 .iter()
                 .map(|(name, object)| FileEntry {
                     file_name: *name,
@@ -171,12 +282,12 @@ impl AppGalleryClient {
             .await?
             .bytes()
             .await?;
-        parse_ret(&bytes)
+        parse_bind(&bytes)
     }
 }
 
 /// Percent-encode a file name for a query string.
-fn encode(value: &str) -> String {
+pub(crate) fn encode(value: &str) -> String {
     let mut out = String::new();
     for b in value.bytes() {
         match b {
@@ -198,8 +309,22 @@ mod tests {
         assert_eq!(FileType::Icon.code(), 0);
         assert_eq!(FileType::Screenshots.code(), 2);
         assert_eq!(FileType::Package.code(), 5);
+        assert_eq!(FileType::IntroVideo.code(), 1);
+        assert_eq!(FileType::VrPanorama.code(), 16);
+        assert!(!FileType::Package.needs_lang());
+        assert!(FileType::PromoImage.needs_lang());
         assert_eq!(ImageOrientation::Portrait.code(), 0);
         assert_eq!(ImageOrientation::Landscape.code(), 1);
+    }
+
+    #[test]
+    fn a_package_bind_returns_its_package_id() {
+        let ids =
+            parse_bind(br#"{"ret":{"code":0,"msg":"ok"},"pkgVersion":["10004151"]}"#).unwrap();
+        assert_eq!(ids, vec!["10004151"]);
+        assert!(parse_bind(br#"{"ret":{"code":0,"msg":"ok"}}"#)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -234,6 +359,9 @@ mod tests {
             file_type: 2,
             lang: Some("en-US"),
             img_show_type: Some(0),
+            video_show_type: None,
+            sensitive_permission_desc: None,
+            device_type: None,
             files: vec![FileEntry {
                 file_name: None,
                 file_dest_url: "obj1",

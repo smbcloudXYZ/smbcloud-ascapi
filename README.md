@@ -9,7 +9,7 @@ from the other:
 | --- | --- |
 | `smbcloud-ascapi-core` | Shared transport: JWT auth, the HTTP client, JSON:API envelopes, error types |
 | `smbcloud-ascapi-play` | Google Play (Edits v3): store listings, listing images, track release notes; service-account auth, independent of `core` |
-| `smbcloud-ascapi-appgallery` | Huawei AppGallery Connect Publishing API: listing text (app info, per-language name, description, brief, release notes); Service Account auth (PS256 JWT), independent of `core` |
+| `smbcloud-ascapi-appgallery` | Huawei AppGallery Connect Publishing API (Android): app info and listings, file and package upload, submit, phased release, release time, GMS flag, package list and status; Service Account auth (PS256 JWT), independent of `core` |
 | `smbcloud-ascapi-aso` | App Metadata: apps, app infos, versions, builds, pre-release versions, review submissions, bundle IDs, localizations, screenshots |
 | `smbcloud-ascapi-pricing` | Pricing: app price schedules, and the per-territory prices joined with their price points and currencies |
 | `smbcloud-ascapi-signing` | Code signing: certificates and provisioning profiles, plus local RSA key pair and CSR generation |
@@ -55,14 +55,30 @@ with a publishing role), not the App Store Connect key:
 
 ```sh
 asc appgallery app-id xyz.smbcloud.SiGit
-asc appgallery listings list xyz.smbcloud.SiGit --lang en-US
-asc appgallery listings update xyz.smbcloud.SiGit --lang en-US \
-  --brief "Git client and code agent" --release-notes-file notes.txt --dry-run
-asc appgallery info update xyz.smbcloud.SiGit --privacy-policy https://example.com/privacy
-asc appgallery images upload <APP_ID> --lang en-US --kind icon icon-216.png
+asc appgallery listings list <APP> [--lang en-US]          # every field the API returns
+asc appgallery listings update <APP> --lang en-US --brief "..." --release-notes-file notes.txt
+asc appgallery listings delete <APP> --lang id
+asc appgallery info update <APP> --privacy-policy URL [--category ID --category-tag ID]
+    [--publish-country CODES] [--developer-website URL] [--device-types JSON] ...
+asc appgallery files upload <APP> --type icon --lang en-US icon-216.png
+asc appgallery files upload <APP> --type screenshots --orientation portrait --lang en-US 1.png 2.png
+asc appgallery files upload <APP> --type package siGit.apk      # chineseMainlandFlag=0 unless --chinese-mainland
+asc appgallery packages list <APP>
+asc appgallery packages status <APP> <PKG_ID>...
+asc appgallery gms <APP> --needs-gms false
+asc appgallery submit <APP> [--release-time T] [--remark TEXT] [--phased-start T --phased-end T --phased-percent P --phased-description D]
+asc appgallery phased-release <APP> (--to-full | --state SUSPEND|RELEASE | --phased-percent P ...)
+asc appgallery release-time <APP> (--immediately | --at T)
 ```
 
-Upload images before writing text: binding an image resets that language's text.
+`<APP>` is the numeric app id or the package name. Every write takes
+`--dry-run`. Binding an image or video for a language clears that language's
+text; `files upload` reads the text first and writes it back if it went
+missing. MCP has three read-only tools: `appgallery_app_info_get`,
+`appgallery_package_list` and `appgallery_package_status`.
+
+Not covered: the "download mode" submit and package calls, which need a
+public package URL and a callback server for Huawei to report to.
 
 ## Copyright
 

@@ -40,7 +40,9 @@ impl RetCode {
     }
 }
 
-/// App basic information: the fields listing work reads.
+/// App basic information. The commonly used fields are typed; every other
+/// field the API returns (categories, prices, device types, ...) is kept in
+/// `other`, so nothing is dropped on the way to the caller.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppInfo {
@@ -52,9 +54,12 @@ pub struct AppInfo {
     pub version_code: Option<i64>,
     pub on_shelf_version_number: Option<String>,
     pub publish_country: Option<String>,
+    #[serde(flatten)]
+    pub other: serde_json::Map<String, serde_json::Value>,
 }
 
-/// One language's listing text.
+/// One language's listing: text typed, visual assets (screenshots, videos,
+/// device materials) kept in `other`.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LanguageInfo {
@@ -64,6 +69,8 @@ pub struct LanguageInfo {
     pub brief_info: Option<String>,
     pub new_features: Option<String>,
     pub icon: Option<String>,
+    #[serde(flatten)]
+    pub other: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -74,6 +81,8 @@ pub struct AppInfoResponse {
     pub audit_info: Option<AuditInfo>,
     #[serde(default)]
     pub languages: Vec<LanguageInfo>,
+    /// Present while a phased release is configured.
+    pub phased_release_info: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -124,17 +133,73 @@ impl LanguageFields {
 }
 
 /// The body of `PUT app-info`: basic information. Unset fields are left as
-/// they are, except `privacy_policy`, which the API always requires.
+/// they are, except `privacy_policy`, which the API requires on every call.
+/// Integer flags follow the reference: 0 no, 1 yes unless noted.
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppInfoFields {
     pub privacy_policy: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_lang: Option<String>,
+    /// Level-2 category id (App/Game Categories appendix).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub child_type: Option<u32>,
+    /// Level-3 category (tag) id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grand_child_type: Option<u32>,
+    /// Games only: 1 standalone, 2 online.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_net_type: Option<u8>,
+    /// 1 free, 0 paid. Cannot change after release.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_free: Option<u8>,
+    /// `{"countryCode":"price"}`; required when `is_free` is 0.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub price: Option<String>,
+    /// JSON array of `{country, currency, price}`; required when `is_free` is 0.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub price_detail: Option<String>,
+    /// Comma-separated country/region codes. `CN` is the Chinese mainland.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publish_country: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_app_forced_update: Option<u8>,
+    /// Let AppGallery fetch the package from the Internet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hispace_auto_down: Option<u8>,
+    /// Comma-separated in-app purchase types (1 activation ... 8 membership).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_tariff_type: Option<String>,
+    /// Games only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub publication_number: Option<String>,
+    /// Games only, China only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub culture_record_number: Option<String>,
+    /// Trustlisted developers only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub developer_name_cn: Option<String>,
+    /// Trustlisted developers only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub developer_name_en: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub developer_website: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub family_share_tag: Option<u8>,
+    /// `[{"deviceType":4,"appAdapters":"4,5"}]`; required when the device
+    /// type changes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_types: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_game_flag: Option<u8>,
+    /// Where users view, change and delete their personal data.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub privacy_rights_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_agreement_url: Option<String>,
+    /// Encrypt the package; the API defaults to 1.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encrypted: Option<u8>,
 }
 
 pub const PRIVACY_POLICY_MAX_LEN: usize = 255;
@@ -142,16 +207,36 @@ pub const DEVELOPER_WEBSITE_MAX_LEN: usize = 255;
 pub const PRIVACY_RIGHTS_URL_MAX_LEN: usize = 256;
 pub const USER_AGREEMENT_URL_MAX_LEN: usize = 512;
 
+fn check_flag(field: &'static str, value: Option<u8>, allowed: &[u8]) -> Result<()> {
+    match value {
+        Some(v) if !allowed.contains(&v) => Err(Error::Invalid {
+            field,
+            detail: format!("{v} is not one of {allowed:?}"),
+        }),
+        _ => Ok(()),
+    }
+}
+
 impl AppInfoFields {
     pub fn validate(&self) -> Result<()> {
         if self.privacy_policy.is_empty() {
             return Err(Error::Missing("privacyPolicy"));
         }
+        let text = |v: &str| Some(v.to_string());
         check_len(
             "privacyPolicy",
-            &Some(self.privacy_policy.clone()),
+            &text(&self.privacy_policy),
             PRIVACY_POLICY_MAX_LEN,
         )?;
+        check_len("defaultLang", &self.default_lang, LANG_MAX_LEN)?;
+        check_len("price", &self.price, 256)?;
+        check_len("priceDetail", &self.price_detail, 8192)?;
+        check_len("publishCountry", &self.publish_country, 2048)?;
+        check_len("appTariffType", &self.app_tariff_type, 16)?;
+        check_len("publicationNumber", &self.publication_number, 50)?;
+        check_len("cultureRecordNumber", &self.culture_record_number, 50)?;
+        check_len("developerNameCn", &self.developer_name_cn, 64)?;
+        check_len("developerNameEn", &self.developer_name_en, 64)?;
         check_len(
             "developerWebsite",
             &self.developer_website,
@@ -166,7 +251,29 @@ impl AppInfoFields {
             "userAgreementUrl",
             &self.user_agreement_url,
             USER_AGREEMENT_URL_MAX_LEN,
-        )
+        )?;
+        check_flag("appNetType", self.app_net_type, &[1, 2])?;
+        check_flag("isFree", self.is_free, &[0, 1])?;
+        check_flag("isAppForcedUpdate", self.is_app_forced_update, &[0, 1])?;
+        check_flag("hispaceAutoDown", self.hispace_auto_down, &[0, 1])?;
+        check_flag("familyShareTag", self.family_share_tag, &[0, 1])?;
+        check_flag("webGameFlag", self.web_game_flag, &[0, 1])?;
+        check_flag("encrypted", self.encrypted, &[0, 1])?;
+        if self.is_free == Some(0) && (self.price.is_none() || self.price_detail.is_none()) {
+            return Err(Error::Invalid {
+                field: "isFree",
+                detail: "a paid app (0) needs price and priceDetail".to_string(),
+            });
+        }
+        if let Some(countries) = &self.publish_country {
+            if countries.split(',').all(|c| c.trim() == "OTHER") {
+                return Err(Error::Invalid {
+                    field: "publishCountry",
+                    detail: "cannot contain only OTHER".to_string(),
+                });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -246,6 +353,28 @@ impl AppGalleryClient {
         let body = serde_json::to_value(fields)?;
         let bytes = self
             .send(Method::PUT, &path, Some(&body))
+            .await?
+            .bytes()
+            .await?;
+        parse_ret(&bytes)
+    }
+
+    /// Delete one language's listing. The default language cannot be deleted.
+    pub async fn delete_language_info(
+        &self,
+        app_id: &str,
+        lang: &str,
+        release_type: Option<u8>,
+    ) -> Result<()> {
+        if lang.is_empty() {
+            return Err(Error::EmptyLang);
+        }
+        let mut path = format!("/publish/v2/app-language-info?appId={app_id}&lang={lang}");
+        if let Some(release_type) = release_type {
+            path.push_str(&format!("&releaseType={release_type}"));
+        }
+        let bytes = self
+            .send(Method::DELETE, &path, None)
             .await?
             .bytes()
             .await?;
@@ -343,6 +472,25 @@ mod tests {
         assert_eq!(info.version_code, Some(2026102700));
         assert_eq!(parsed.languages.len(), 1);
         assert_eq!(parsed.languages[0].app_name.as_deref(), Some("siGit"));
+        assert_eq!(
+            parsed.languages[0].other.get("icon"),
+            None,
+            "typed fields are not duplicated into other"
+        );
+    }
+
+    #[test]
+    fn untyped_fields_survive_in_other() {
+        let json = br#"{"ret":{"code":0,"msg":"ok"},
+            "appInfo":{"parentType":13,"childType":10000000,"deviceTypes":[{"deviceType":4}]},
+            "languages":[{"lang":"en-US","introPic":"a,b","deviceMaterials":[{"deviceType":4}]}],
+            "phasedReleaseInfo":{"state":"DRAFT"}}"#;
+        let parsed = parse_app_info(json).unwrap();
+        let info = parsed.app_info.unwrap();
+        assert_eq!(info.other["childType"], 10000000);
+        assert!(info.other.contains_key("deviceTypes"));
+        assert_eq!(parsed.languages[0].other["introPic"], "a,b");
+        assert_eq!(parsed.phased_release_info.unwrap()["state"], "DRAFT");
     }
 
     #[test]
@@ -364,6 +512,24 @@ mod tests {
             ..Default::default()
         };
         assert!(fields.validate().is_ok());
+        assert!(AppInfoFields {
+            is_free: Some(0),
+            ..fields.clone()
+        }
+        .validate()
+        .is_err());
+        assert!(AppInfoFields {
+            publish_country: Some("OTHER".into()),
+            ..fields.clone()
+        }
+        .validate()
+        .is_err());
+        assert!(AppInfoFields {
+            app_net_type: Some(3),
+            ..fields.clone()
+        }
+        .validate()
+        .is_err());
         assert_eq!(
             serde_json::to_value(&fields).unwrap(),
             serde_json::json!({"privacyPolicy":"https://sigit.si/privacy","developerWebsite":"https://sigit.si"})

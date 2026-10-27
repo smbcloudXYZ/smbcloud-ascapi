@@ -37,6 +37,9 @@ pub enum Error {
         max: usize,
     },
 
+    #[error("{field}: {detail}")]
+    Invalid { field: &'static str, detail: String },
+
     #[error("{0} is required")]
     Missing(&'static str),
 

@@ -76,22 +76,30 @@ blocks for minutes and publishes a build doesn't belong in MCP.
 
 ## AppGallery (CLI)
 
-`asc appgallery` talks to the AppGallery Connect Publishing API through
-`crates/appgallery`; the shared operations are in
-`crates/frontend/src/appgallery.rs`. Auth is a PS256 JWT signed locally from
-the Service Account file and sent as the bearer token, no token exchange.
-Endpoints sit under `https://connect-api.cloud.huawei.com/api`: `appid-list`,
-`app-info` and `app-language-info`. A 200 reply with a non-zero `ret.code` is
-an error. The update limits (name 64, description 8000, brief 80, release
-notes 500) come from the update reference; the query reference documents 60
-and 1000 for brief and release notes, so the server has the last word.
-Images and packages go through `GET upload-url/for-obs`, a `PUT` of the bytes
-to the pre-signed URL (our JWT is not sent there), then `PUT app-file-info` to
-bind the object id. Observed 2026-10-27: binding an icon with `lang` reset
-that language's name, description, brief and release notes to empty, so upload
-images first and write the text last, then read it back. `PUT app-info`
-needs `privacyPolicy` every time. Service Account mode needs no `client_id`
-header. There are no MCP tools for it yet.
+`asc appgallery` covers the Android Publishing API through `crates/appgallery`
+(`publish.rs` app info and listings, `upload.rs` files, `release.rs` submit,
+phased release, release time, GMS flag, packages); the shared operations are
+in `crates/frontend/src/appgallery.rs`. Endpoints sit under
+`https://connect-api.cloud.huawei.com/api/publish/v2/`.
+
+- Auth is a PS256 JWT signed locally from the Service Account file and sent as
+  the bearer token; no token exchange and no `client_id` header (confirmed
+  live 2026-10-27).
+- A 200 reply with a non-zero `ret.code` is an error.
+- `AppInfo` and `LanguageInfo` type the common fields and keep the rest in a
+  flattened `other`, so `listings list` returns everything the API sends.
+- Files: `GET upload-url/for-obs`, `PUT` the bytes to the pre-signed URL (our
+  JWT is not sent there), then `PUT app-file-info`. Binding an image for a
+  language reset that language's text (seen 2026-10-27), so `upload_files`
+  reads the text first and writes it back if it went missing.
+- `PUT app-info` needs `privacyPolicy` on every call.
+- Update limits (name 64, description 8000, brief 80, release notes 500) come
+  from the update reference; the query reference says 60 and 1000 for brief
+  and release notes.
+- MCP is read-only (`appgallery_app_info_get`, `appgallery_package_list`,
+  `appgallery_package_status`); writes, and above all `submit`, stay on the CLI.
+- Not implemented: `app-submit-with-file` and `add-packageurl` (download mode)
+  and the callback they report to; they need a public URL and a server.
 
 ## Git branching workflow
 

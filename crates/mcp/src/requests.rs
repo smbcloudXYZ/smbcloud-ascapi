@@ -300,3 +300,32 @@ pub struct PlayTrackGetRequest {
     /// Track name: internal, alpha, beta or production.
     pub track: String,
 }
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct AppGalleryAppInfoRequest {
+    /// AppGallery app id (digits) or Android package name.
+    pub app: String,
+    /// Language code such as en-US; every language when omitted.
+    #[serde(default)]
+    pub lang: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct AppGalleryPackageListRequest {
+    /// AppGallery app id (digits) or Android package name.
+    pub app: String,
+    /// First record, from 1.
+    #[serde(default)]
+    pub from: Option<u32>,
+    /// Number of packages, up to 100 (default 10).
+    #[serde(default)]
+    pub max: Option<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct AppGalleryPackageStatusRequest {
+    /// AppGallery app id (digits) or Android package name.
+    pub app: String,
+    /// Package ids (pkgVersion) from appgallery_package_list.
+    pub pkg_ids: Vec<String>,
+}

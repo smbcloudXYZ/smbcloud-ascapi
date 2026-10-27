@@ -6,8 +6,9 @@ use std::path::Path;
 use serde::Serialize;
 use smbcloud_ascapi_appgallery::upload::sha256_hex;
 use smbcloud_ascapi_appgallery::{
-    AppGalleryClient, AppInfo, AppInfoFields, AppInfoResponse, FileType, ImageOrientation,
-    LanguageFields, LanguageInfo, ServiceAccount,
+    AppGalleryClient, AppInfo, AppInfoFields, AppInfoResponse, FileBind, FileType,
+    ImageOrientation, LanguageFields, LanguageInfo, PackageList, PackageState, PhasedRelease,
+    ReleaseTimeChange, ServiceAccount, Submit,
 };
 
 /// Resolve the AppGallery client. `path` wins; then
@@ -215,67 +216,172 @@ pub struct PlannedFile {
 }
 
 #[derive(Debug, Serialize)]
-pub struct ImageUpload {
+pub struct FileUpload {
     pub dry_run: bool,
     pub app_id: String,
-    pub kind: &'static str,
-    pub lang: String,
+    pub file_type: &'static str,
+    pub lang: Option<String>,
     pub files: Vec<PlannedFile>,
+    /// Package ids, when a package was added.
+    pub pkg_version: Vec<String>,
+    /// True when binding cleared the language's text and it was written back.
+    pub restored_text: bool,
+}
+
+/// Options for [`upload_files`] beyond the files themselves.
+#[derive(Debug, Clone, Default)]
+pub struct UploadOptions {
+    pub lang: Option<String>,
+    pub image_orientation: Option<ImageOrientation>,
+    pub video_orientation: Option<ImageOrientation>,
+    pub sensitive_permission_desc: Option<String>,
+    pub device_type: Option<u8>,
+    /// Sent as `chineseMainlandFlag`; false matches siGit's "not in the
+    /// Chinese mainland" choice. Mandatory for developers registered
+    /// outside the mainland.
+    pub chinese_mainland: bool,
+}
+
+/// The CLI name of a file type.
+pub fn file_type_name(kind: FileType) -> &'static str {
+    match kind {
+        FileType::Icon => "icon",
+        FileType::IntroVideo => "intro-video",
+        FileType::Screenshots => "screenshots",
+        FileType::PromoVideo => "promo-video",
+        FileType::PromoImage => "promo-image",
+        FileType::Package => "package",
+        FileType::AgentCertificate => "agent-certificate",
+        FileType::ElectronicCertificate => "electronic-certificate",
+        FileType::CultureLicenseScreenshot => "culture-license-screenshot",
+        FileType::CultureLicense => "culture-license",
+        FileType::VrCover => "vr-cover",
+        FileType::VrScreenshots => "vr-screenshots",
+        FileType::VrPromoImage => "vr-promo-image",
+        FileType::VrCoverLayered => "vr-cover-layered",
+        FileType::VrPromo4x3 => "vr-promo-4x3",
+        FileType::VrPromo1x1 => "vr-promo-1x1",
+        FileType::VrPanorama => "vr-panorama",
+    }
+}
+
+fn extension(path: &Path) -> String {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default()
 }
 
 fn is_image(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .map(|e| matches!(e.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg"))
-        .unwrap_or(false)
+    matches!(extension(path).as_str(), "png" | "jpg" | "jpeg")
 }
 
-/// Upload an icon (exactly one file) or screenshots (in display order) and
-/// bind them to one language. With `dry_run` nothing is sent: the plan lists
-/// each file's size and hash. Uploads are sent with `chineseMainlandFlag=0`,
-/// matching the "not available in the Chinese mainland" decision.
-pub async fn upload_images(
-    client: &AppGalleryClient,
-    app: &str,
-    lang: &str,
-    kind: FileType,
-    orientation: Option<ImageOrientation>,
-    paths: &[std::path::PathBuf],
-    dry_run: bool,
-) -> Result<ImageUpload, String> {
-    let kind_name = match kind {
-        FileType::Icon => "icon",
-        FileType::Screenshots => "screenshots",
-        FileType::Package => return Err("use the package upload for APKs".to_string()),
-    };
-    if lang.is_empty() {
-        return Err("lang must not be empty".to_string());
-    }
+/// Check the files suit the type before anything is read or sent.
+fn check_files(kind: FileType, paths: &[std::path::PathBuf]) -> Result<(), String> {
     if paths.is_empty() {
-        return Err("pass at least one image file".to_string());
+        return Err("pass at least one file".to_string());
     }
-    if kind == FileType::Icon && paths.len() != 1 {
-        return Err("an icon is exactly one file".to_string());
-    }
-    if kind == FileType::Screenshots {
-        if paths.len() > MAX_SCREENSHOTS {
+    let one = |what: &str| {
+        if paths.len() == 1 {
+            Ok(())
+        } else {
+            Err(format!("{what} is exactly one file"))
+        }
+    };
+    match kind {
+        FileType::Icon => one("an icon")?,
+        FileType::Package => one("a package")?,
+        FileType::Screenshots | FileType::VrScreenshots if paths.len() > MAX_SCREENSHOTS => {
             return Err(format!(
                 "at most {MAX_SCREENSHOTS} screenshots per language"
+            ))
+        }
+        FileType::IntroVideo if !paths.len().is_multiple_of(2) || paths.len() > 6 => {
+            return Err("intro videos go as video, poster pairs, up to three pairs".to_string())
+        }
+        FileType::PromoVideo if paths.len() != 2 => {
+            return Err("a promo video is one video then its poster".to_string())
+        }
+        _ => {}
+    }
+    for path in paths {
+        let ext = extension(path);
+        let ok = match kind {
+            FileType::Package => matches!(ext.as_str(), "apk" | "aab" | "rpk"),
+            FileType::ElectronicCertificate => ext == "pdf",
+            FileType::CultureLicense => is_image(path) || ext == "pdf",
+            // Videos alternate with poster images.
+            FileType::IntroVideo | FileType::PromoVideo => {
+                is_image(path) || matches!(ext.as_str(), "mp4" | "mov")
+            }
+            _ => is_image(path),
+        };
+        if !ok {
+            return Err(format!(
+                "{} does not fit {}",
+                path.display(),
+                file_type_name(kind)
             ));
         }
-        if orientation.is_none() {
-            return Err("screenshots need --orientation portrait or landscape".to_string());
-        }
+    }
+    Ok(())
+}
+
+fn text_of(info: &LanguageInfo) -> LanguageFields {
+    LanguageFields {
+        lang: info.lang.clone().unwrap_or_default(),
+        app_name: info.app_name.clone().filter(|v| !v.is_empty()),
+        app_desc: info.app_desc.clone().filter(|v| !v.is_empty()),
+        brief_info: info.brief_info.clone().filter(|v| !v.is_empty()),
+        new_features: info.new_features.clone().filter(|v| !v.is_empty()),
+    }
+}
+
+/// Text that was set before and is empty now.
+fn lost_text(before: &LanguageFields, after: &LanguageInfo) -> bool {
+    let gone = |was: &Option<String>, now: &Option<String>| {
+        was.is_some() && now.as_deref().unwrap_or_default().is_empty()
+    };
+    gone(&before.app_desc, &after.app_desc)
+        || gone(&before.brief_info, &after.brief_info)
+        || gone(&before.new_features, &after.new_features)
+        || gone(&before.app_name, &after.app_name)
+}
+
+/// Upload files of one type and bind them to the app, in order. With
+/// `dry_run` nothing is sent: the plan lists each file's size and hash.
+///
+/// Binding a file for a language clears that language's text, so the text is
+/// read first and written back if it went missing.
+pub async fn upload_files(
+    client: &AppGalleryClient,
+    app: &str,
+    kind: FileType,
+    paths: &[std::path::PathBuf],
+    options: &UploadOptions,
+    dry_run: bool,
+) -> Result<FileUpload, String> {
+    check_files(kind, paths)?;
+    if kind.needs_lang() && options.lang.as_deref().unwrap_or_default().is_empty() {
+        return Err(format!("{} needs --lang", file_type_name(kind)));
+    }
+    if matches!(kind, FileType::Screenshots | FileType::VrScreenshots)
+        && options.image_orientation.is_none()
+    {
+        return Err("screenshots need --orientation portrait or landscape".to_string());
+    }
+    if matches!(kind, FileType::IntroVideo | FileType::PromoVideo)
+        && options.video_orientation.is_none()
+    {
+        return Err("videos need --video-orientation portrait or landscape".to_string());
     }
     let mut loaded = Vec::new();
     for path in paths {
-        if !is_image(path) {
-            return Err(format!("{} is not a PNG or JPEG file", path.display()));
-        }
         let bytes = std::fs::read(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
         loaded.push((path, bytes));
     }
     let app_id = resolve_app_id(client, app).await?;
+    let lang = options.lang.clone().filter(|_| kind.needs_lang());
     let mut files: Vec<PlannedFile> = loaded
         .iter()
         .map(|(path, bytes)| PlannedFile {
@@ -285,47 +391,288 @@ pub async fn upload_images(
             object_id: None,
         })
         .collect();
+    let mut result = FileUpload {
+        dry_run,
+        app_id: app_id.clone(),
+        file_type: file_type_name(kind),
+        lang: lang.clone(),
+        files: Vec::new(),
+        pkg_version: Vec::new(),
+        restored_text: false,
+    };
     if dry_run {
-        return Ok(ImageUpload {
-            dry_run,
-            app_id,
-            kind: kind_name,
-            lang: lang.to_string(),
-            files,
-        });
+        result.files = files;
+        return Ok(result);
     }
+
+    let text_before = match &lang {
+        Some(lang) => client
+            .app_info(&app_id, Some(lang))
+            .await
+            .map_err(err)?
+            .languages
+            .into_iter()
+            .next()
+            .map(|info| text_of(&info)),
+        None => None,
+    };
+
+    let mut names = Vec::new();
     for ((path, bytes), planned) in loaded.into_iter().zip(files.iter_mut()) {
         let name = path
             .file_name()
             .and_then(|n| n.to_str())
-            .ok_or_else(|| format!("{} has no file name", path.display()))?;
+            .ok_or_else(|| format!("{} has no file name", path.display()))?
+            .to_string();
         let target = client
-            .upload_url(&app_id, name, &bytes, Some(false))
+            .upload_url(&app_id, &name, &bytes, Some(options.chinese_mainland))
             .await
             .map_err(err)?;
         client.put_upload(&target, bytes).await.map_err(err)?;
         planned.object_id = Some(target.object_id);
+        names.push(name);
     }
-    let objects: Vec<(Option<&str>, &str)> = files
-        .iter()
-        .map(|f| (None, f.object_id.as_deref().unwrap_or_default()))
-        .collect();
-    client
-        .bind_files(&app_id, kind, Some(lang), orientation, &objects)
-        .await
-        .map_err(err)?;
-    Ok(ImageUpload {
+    let bind = FileBind {
+        file_type: kind,
+        lang: lang.as_deref(),
+        image_orientation: options.image_orientation,
+        video_orientation: options.video_orientation,
+        sensitive_permission_desc: options.sensitive_permission_desc.as_deref(),
+        device_type: options.device_type,
+        files: files
+            .iter()
+            .zip(&names)
+            .map(|(f, name)| {
+                (
+                    (kind == FileType::Package).then_some(name.as_str()),
+                    f.object_id.as_deref().unwrap_or_default(),
+                )
+            })
+            .collect(),
+    };
+    result.pkg_version = client.bind_files(&app_id, &bind).await.map_err(err)?;
+
+    if let (Some(lang), Some(before)) = (&lang, text_before) {
+        let after = client
+            .app_info(&app_id, Some(lang))
+            .await
+            .map_err(err)?
+            .languages
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+        if lost_text(&before, &after) {
+            client
+                .update_language_info(&app_id, &before, None)
+                .await
+                .map_err(|e| format!("files bound, but restoring the {lang} text failed: {e}"))?;
+            result.restored_text = true;
+        }
+    }
+    result.files = files;
+    Ok(result)
+}
+
+/// Delete one language's listing (not the default language).
+pub async fn delete_language(
+    client: &AppGalleryClient,
+    app: &str,
+    lang: &str,
+    dry_run: bool,
+) -> Result<serde_json::Value, String> {
+    let app_id = resolve_app_id(client, app).await?;
+    if !dry_run {
+        client
+            .delete_language_info(&app_id, lang, None)
+            .await
+            .map_err(err)?;
+    }
+    Ok(serde_json::json!({ "dry_run": dry_run, "app_id": app_id, "deleted_lang": lang }))
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReleaseAction {
+    pub dry_run: bool,
+    pub app_id: String,
+    pub action: &'static str,
+    /// What was (or would be) sent.
+    pub detail: serde_json::Value,
+}
+
+/// Submit for review. Approved apps go live (at `release_time` if set).
+pub async fn submit(
+    client: &AppGalleryClient,
+    app: &str,
+    options: Submit,
+    dry_run: bool,
+) -> Result<ReleaseAction, String> {
+    options.validate().map_err(err)?;
+    let app_id = resolve_app_id(client, app).await?;
+    let detail = serde_json::json!({
+        "releaseTime": options.release_time,
+        "remark": options.remark,
+        "phased": options.phased,
+    });
+    if !dry_run {
+        client.submit(&app_id, &options).await.map_err(err)?;
+    }
+    Ok(ReleaseAction {
         dry_run,
         app_id,
-        kind: kind_name,
-        lang: lang.to_string(),
-        files,
+        action: "submit",
+        detail,
     })
+}
+
+/// Update a phased release, or with `to_full` turn it into a full release.
+pub async fn update_phased_release(
+    client: &AppGalleryClient,
+    app: &str,
+    phased: PhasedRelease,
+    to_full: bool,
+    dry_run: bool,
+) -> Result<ReleaseAction, String> {
+    if !to_full {
+        phased.validate().map_err(err)?;
+    }
+    let app_id = resolve_app_id(client, app).await?;
+    if !dry_run {
+        client
+            .update_phased_release(&app_id, &phased, to_full)
+            .await
+            .map_err(err)?;
+    }
+    Ok(ReleaseAction {
+        dry_run,
+        app_id,
+        action: if to_full {
+            "phased-release-to-full"
+        } else {
+            "phased-release-update"
+        },
+        detail: if to_full {
+            serde_json::json!({})
+        } else {
+            serde_json::to_value(&phased).map_err(err)?
+        },
+    })
+}
+
+/// Report whether the app depends on Google Mobile Services.
+pub async fn set_gms_dependency(
+    client: &AppGalleryClient,
+    app: &str,
+    needs_gms: bool,
+    dry_run: bool,
+) -> Result<ReleaseAction, String> {
+    let app_id = resolve_app_id(client, app).await?;
+    if !dry_run {
+        client
+            .set_gms_dependency(&app_id, needs_gms)
+            .await
+            .map_err(err)?;
+    }
+    Ok(ReleaseAction {
+        dry_run,
+        app_id,
+        action: "gms",
+        detail: serde_json::json!({ "needGms": u8::from(needs_gms) }),
+    })
+}
+
+/// Change when a version in Releasing state goes live.
+pub async fn update_release_time(
+    client: &AppGalleryClient,
+    app: &str,
+    change: ReleaseTimeChange,
+    dry_run: bool,
+) -> Result<ReleaseAction, String> {
+    let app_id = resolve_app_id(client, app).await?;
+    let detail = match &change {
+        ReleaseTimeChange::Immediately => serde_json::json!({ "changeType": 2 }),
+        ReleaseTimeChange::At(t) => serde_json::json!({ "changeType": 3, "releaseTime": t }),
+    };
+    if !dry_run {
+        client
+            .update_release_time(&app_id, &change)
+            .await
+            .map_err(err)?;
+    }
+    Ok(ReleaseAction {
+        dry_run,
+        app_id,
+        action: "release-time",
+        detail,
+    })
+}
+
+/// Packages uploaded for the app.
+pub async fn package_list(
+    client: &AppGalleryClient,
+    app: &str,
+    from: Option<u32>,
+    max: Option<u32>,
+) -> Result<PackageList, String> {
+    let app_id = resolve_app_id(client, app).await?;
+    client.package_list(&app_id, from, max).await.map_err(err)
+}
+
+/// Parse status of uploaded packages (0 normal, 1 parsing, 2 failed).
+pub async fn package_status(
+    client: &AppGalleryClient,
+    app: &str,
+    pkg_ids: &[String],
+) -> Result<Vec<PackageState>, String> {
+    let app_id = resolve_app_id(client, app).await?;
+    let ids: Vec<&str> = pkg_ids.iter().map(String::as_str).collect();
+    client.package_status(&app_id, &ids).await.map_err(err)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_checks_follow_the_type() {
+        use std::path::PathBuf;
+        let p = |names: &[&str]| names.iter().map(PathBuf::from).collect::<Vec<_>>();
+        assert!(check_files(FileType::Icon, &p(&["a.png"])).is_ok());
+        assert!(check_files(FileType::Icon, &p(&["a.png", "b.png"])).is_err());
+        assert!(check_files(FileType::Package, &p(&["siGit.apk"])).is_ok());
+        assert!(check_files(FileType::Package, &p(&["siGit.png"])).is_err());
+        assert!(check_files(FileType::PromoVideo, &p(&["v.mp4", "poster.png"])).is_ok());
+        assert!(check_files(FileType::IntroVideo, &p(&["v.mp4"])).is_err());
+        assert!(check_files(FileType::ElectronicCertificate, &p(&["c.pdf"])).is_ok());
+        let eleven: Vec<String> = (0..11).map(|i| format!("{i}.png")).collect();
+        let eleven: Vec<&str> = eleven.iter().map(String::as_str).collect();
+        assert!(check_files(FileType::Screenshots, &p(&eleven)).is_err());
+    }
+
+    #[test]
+    fn lost_text_spots_fields_that_were_cleared() {
+        let before = LanguageFields {
+            lang: "en-US".into(),
+            app_desc: Some("d".into()),
+            ..Default::default()
+        };
+        let cleared = LanguageInfo {
+            app_desc: Some(String::new()),
+            ..Default::default()
+        };
+        let kept = LanguageInfo {
+            app_desc: Some("d".into()),
+            ..Default::default()
+        };
+        assert!(lost_text(&before, &cleared));
+        assert!(!lost_text(&before, &kept));
+    }
+
+    #[test]
+    fn every_file_type_has_a_distinct_name() {
+        let names: std::collections::HashSet<_> =
+            FileType::ALL.iter().map(|t| file_type_name(*t)).collect();
+        assert_eq!(names.len(), FileType::ALL.len());
+    }
 
     #[test]
     fn only_png_and_jpeg_count_as_images() {
