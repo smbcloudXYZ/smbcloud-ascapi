@@ -20,6 +20,7 @@
 //!   `profileContent`, and [`profiles::download_profile`] returns the path
 //!   it wrote instead.
 
+pub mod appgallery;
 pub mod attach_build;
 pub mod await_processing;
 pub mod certificates;

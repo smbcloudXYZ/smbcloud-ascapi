@@ -41,7 +41,7 @@ impl RetCode {
 }
 
 /// App basic information: the fields listing work reads.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppInfo {
     /// 0 released, 1 rejected, 3 releasing, 4 reviewing, 7 draft, and so on.
@@ -66,7 +66,7 @@ pub struct LanguageInfo {
     pub icon: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppInfoResponse {
     pub app_info: Option<AppInfo>,
@@ -76,7 +76,7 @@ pub struct AppInfoResponse {
     pub languages: Vec<LanguageInfo>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuditInfo {
     pub audit_opinion: Option<String>,
@@ -142,7 +142,7 @@ struct AppIdEnvelope {
     appids: Vec<AppIdPair>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AppIdPair {
     /// The app name.
     pub key: String,

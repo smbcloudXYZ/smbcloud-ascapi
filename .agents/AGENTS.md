@@ -74,6 +74,19 @@ stale `AuthKey_<id>.p8` and fail with a 401, and `--auth-string` would put
 the key in the process table. Upload is CLI-only, because a tool call that
 blocks for minutes and publishes a build doesn't belong in MCP.
 
+## AppGallery (CLI)
+
+`asc appgallery` talks to the AppGallery Connect Publishing API through
+`crates/appgallery`; the shared operations are in
+`crates/frontend/src/appgallery.rs`. Auth is a PS256 JWT signed locally from
+the Service Account file and sent as the bearer token, no token exchange.
+Endpoints sit under `https://connect-api.cloud.huawei.com/api`: `appid-list`,
+`app-info` and `app-language-info`. A 200 reply with a non-zero `ret.code` is
+an error. The update limits (name 64, description 8000, brief 80, release
+notes 500) come from the update reference; the query reference documents 60
+and 1000 for brief and release notes, so the server has the last word.
+There are no MCP tools for it yet.
+
 ## Git branching workflow
 
 Branches flow in one direction: `main` ← `development` ← feature branch.

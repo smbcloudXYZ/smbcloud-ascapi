@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use smbcloud_ascapi_appgallery::LanguageFields as AppGalleryLanguageFields;
 use smbcloud_ascapi_aso::app::AppUpdateAttributes;
 use smbcloud_ascapi_aso::app_info_localization::{
     AppInfoLocalizationCreateAttributes, AppInfoLocalizationUpdateAttributes,
@@ -92,6 +93,63 @@ enum PlayCommand {
     Tracks {
         #[command(subcommand)]
         command: PlayTracksCommand,
+    },
+}
+
+// `Listings` carries the nested update command with its many text flags; boxing
+// a clap subcommand field is not possible.
+#[allow(clippy::large_enum_variant)]
+#[derive(Subcommand)]
+enum AppGalleryCommand {
+    /// Localized listing text: name, description, brief and release notes.
+    Listings {
+        #[command(subcommand)]
+        command: AppGalleryListingsCommand,
+    },
+    /// Look up the AppGallery app id for a package name.
+    AppId { package: String },
+}
+
+#[derive(Subcommand)]
+enum AppGalleryListingsCommand {
+    /// App info and every language's text, or one language's. `APP` is the
+    /// numeric app id or the package name.
+    List {
+        app: String,
+        #[arg(long)]
+        lang: Option<String>,
+    },
+    /// Update one language's text (or add the language), then read it back.
+    /// With `--dry-run` nothing is sent.
+    Update {
+        app: String,
+        /// Language code such as en-US, zh-CN or id.
+        #[arg(long)]
+        lang: String,
+        /// App name, up to 64 characters (required for a new language).
+        #[arg(long, conflicts_with = "name_file")]
+        name: Option<String>,
+        #[arg(long)]
+        name_file: Option<PathBuf>,
+        /// Full description, up to 8000 characters.
+        #[arg(long, conflicts_with = "description_file")]
+        description: Option<String>,
+        /// Read the description from a UTF-8 file; one trailing newline is dropped.
+        #[arg(long)]
+        description_file: Option<PathBuf>,
+        /// Brief introduction, up to 80 characters.
+        #[arg(long, conflicts_with = "brief_file")]
+        brief: Option<String>,
+        #[arg(long)]
+        brief_file: Option<PathBuf>,
+        /// Release notes, up to 500 characters.
+        #[arg(long, conflicts_with = "release_notes_file")]
+        release_notes: Option<String>,
+        #[arg(long)]
+        release_notes_file: Option<PathBuf>,
+        /// 1 for the entire network (default) or 3 for a phased release.
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=3))]
+        release_type: Option<u8>,
     },
 }
 
@@ -204,6 +262,22 @@ enum PlayTracksCommand {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Huawei AppGallery listing text. Uses an AppGallery Connect Service
+    /// Account, not the App Store Connect key.
+    #[command(name = "appgallery")]
+    AppGallery {
+        /// Path to the Service Account credential file (`*private.json`).
+        /// Falls back to `APPGALLERY_SERVICE_ACCOUNT_JSON_PATH`, then to the
+        /// contents in `APPGALLERY_SERVICE_ACCOUNT_JSON`.
+        #[arg(long, global = true)]
+        service_account: Option<PathBuf>,
+        /// Sent as the `client_id` header when set. Falls back to
+        /// `APPGALLERY_CLIENT_ID`.
+        #[arg(long, global = true)]
+        client_id: Option<String>,
+        #[command(subcommand)]
+        command: AppGalleryCommand,
+    },
     /// Google Play store listings: text, images, and release notes. Uses a
     /// Play service account, not the App Store Connect key.
     Play {
@@ -295,6 +369,66 @@ enum Command {
         #[command(subcommand)]
         command: SigningCommand,
     },
+}
+
+async fn run_appgallery(
+    service_account: Option<&std::path::Path>,
+    client_id: Option<&str>,
+    command: AppGalleryCommand,
+    dry_run: bool,
+) -> Result<()> {
+    use smbcloud_ascapi_frontend::appgallery;
+    let client = appgallery::appgallery_client(service_account, client_id)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let fail = |e: String| anyhow::anyhow!(e);
+    match command {
+        AppGalleryCommand::AppId { package } => print_json(
+            &client
+                .app_ids_for_packages(&[package.as_str()])
+                .await
+                .map_err(|e| anyhow::anyhow!(e))?,
+        ),
+        AppGalleryCommand::Listings { command } => match command {
+            AppGalleryListingsCommand::List { app, lang } => print_json(
+                &appgallery::read_listings(&client, &app, lang.as_deref())
+                    .await
+                    .map_err(fail)?,
+            ),
+            AppGalleryListingsCommand::Update {
+                app,
+                lang,
+                name,
+                name_file,
+                description,
+                description_file,
+                brief,
+                brief_file,
+                release_notes,
+                release_notes_file,
+                release_type,
+            } => {
+                let fields = AppGalleryLanguageFields {
+                    lang,
+                    app_name: text_arg(name, name_file, "--name-file")?,
+                    app_desc: text_arg(description, description_file, "--description-file")?,
+                    brief_info: text_arg(brief, brief_file, "--brief-file")?,
+                    new_features: text_arg(
+                        release_notes,
+                        release_notes_file,
+                        "--release-notes-file",
+                    )?,
+                };
+                let result =
+                    appgallery::update_language(&client, &app, fields, release_type, dry_run)
+                        .await
+                        .map_err(fail)?;
+                if result.dry_run {
+                    println!("# dry run: nothing was sent; body that would be sent:");
+                }
+                print_json(&result)
+            }
+        },
+    }
 }
 
 async fn run_play(
@@ -1482,6 +1616,21 @@ async fn main() -> Result<()> {
         return smbcloud_ascapi_mcp::serve().await;
     }
 
+    if let Some(Command::AppGallery {
+        service_account,
+        client_id,
+        command,
+    }) = cli.command
+    {
+        return run_appgallery(
+            service_account.as_deref(),
+            client_id.as_deref(),
+            command,
+            cli.dry_run,
+        )
+        .await;
+    }
+
     if let Some(Command::Play {
         play_service_account,
         command,
@@ -1521,7 +1670,9 @@ async fn main() -> Result<()> {
     };
 
     match command {
-        Command::Play { .. } => unreachable!("handled before App Store Connect credentials"),
+        Command::AppGallery { .. } | Command::Play { .. } => {
+            unreachable!("handled before App Store Connect credentials")
+        }
         Command::Apps { command } => run_apps(&client, &altool_auth, command, cli.dry_run).await,
         Command::BundleIds { command } => run_bundle_ids(&client, command, cli.dry_run).await,
         Command::AppStoreVersions { command } => {
