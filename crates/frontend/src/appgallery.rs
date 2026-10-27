@@ -293,9 +293,11 @@ fn check_files(kind: FileType, paths: &[std::path::PathBuf]) -> Result<(), Strin
     match kind {
         FileType::Icon => one("an icon")?,
         FileType::Package => one("a package")?,
-        FileType::Screenshots | FileType::VrScreenshots if paths.len() > MAX_SCREENSHOTS => {
+        FileType::Screenshots | FileType::VrScreenshots
+            if !(MIN_SCREENSHOTS..=MAX_SCREENSHOTS).contains(&paths.len()) =>
+        {
             return Err(format!(
-                "at most {MAX_SCREENSHOTS} screenshots per language"
+                "{MIN_SCREENSHOTS} to {MAX_SCREENSHOTS} screenshots per language; binding replaces the whole set"
             ))
         }
         FileType::IntroVideo if !paths.len().is_multiple_of(2) || paths.len() > 6 => {
