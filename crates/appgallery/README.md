@@ -18,5 +18,19 @@ let account = ServiceAccount::from_json_file("xxxprivate.json")?;
 let client = AppGalleryClient::new(account);
 ```
 
-Status: authentication and the client are in. The Publishing API calls
-(app info, language info) are not.
+Listing text, from the Publishing API:
+
+```rust
+let ids = client.app_ids_for_packages(&["xyz.smbcloud.SiGit"]).await?;
+let info = client.app_info(&ids[0].value, Some("en-US")).await?;
+client
+    .update_language_info(&ids[0].value, &LanguageFields {
+        lang: "en-US".into(),
+        new_features: Some("First release".into()),
+        ..Default::default()
+    }, None)
+    .await?;
+```
+
+Limits checked before sending: name 64, description 8000, brief 80, release
+notes 500 characters. A non-zero `ret.code` in a 200 reply is an error.

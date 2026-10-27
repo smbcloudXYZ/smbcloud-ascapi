@@ -25,6 +25,20 @@ pub enum Error {
 
     #[error("AppGallery Connect API returned {status}: {detail}")]
     Api { status: u16, detail: String },
+
+    /// HTTP 200 with a non-zero `ret.code` in the body.
+    #[error("AppGallery Connect result code {code}: {msg}")]
+    Result { code: i64, msg: String },
+
+    #[error("{field} is {len} characters; the limit is {max}")]
+    TooLong {
+        field: &'static str,
+        len: usize,
+        max: usize,
+    },
+
+    #[error("lang must not be empty")]
+    EmptyLang,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
