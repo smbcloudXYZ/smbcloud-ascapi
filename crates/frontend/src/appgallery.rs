@@ -203,8 +203,10 @@ pub async fn update_basic_info(
     })
 }
 
-/// Most screenshots AppGallery takes per language.
-pub const MAX_SCREENSHOTS: usize = 10;
+/// Screenshots per language: the AGC console asks for 3 to 8 (the API
+/// reference allows up to 10 addresses, but the console rejects the listing).
+pub const MIN_SCREENSHOTS: usize = 3;
+pub const MAX_SCREENSHOTS: usize = 8;
 
 #[derive(Debug, Serialize)]
 pub struct PlannedFile {
@@ -643,9 +645,11 @@ mod tests {
         assert!(check_files(FileType::PromoVideo, &p(&["v.mp4", "poster.png"])).is_ok());
         assert!(check_files(FileType::IntroVideo, &p(&["v.mp4"])).is_err());
         assert!(check_files(FileType::ElectronicCertificate, &p(&["c.pdf"])).is_ok());
-        let eleven: Vec<String> = (0..11).map(|i| format!("{i}.png")).collect();
-        let eleven: Vec<&str> = eleven.iter().map(String::as_str).collect();
-        assert!(check_files(FileType::Screenshots, &p(&eleven)).is_err());
+        let nine: Vec<String> = (0..9).map(|i| format!("{i}.png")).collect();
+        let nine: Vec<&str> = nine.iter().map(String::as_str).collect();
+        assert!(check_files(FileType::Screenshots, &p(&nine)).is_err());
+        assert!(check_files(FileType::Screenshots, &p(&["1.png", "2.png"])).is_err());
+        assert!(check_files(FileType::Screenshots, &p(&["1.png", "2.png", "3.png"])).is_ok());
     }
 
     #[test]
