@@ -113,7 +113,7 @@ impl Track {
                 }
                 if user_fraction < held_fraction {
                     return Err(format!(
-                        "track {} already serves version code {version_code} to {held_fraction};                          a rollout cannot be lowered to {user_fraction}",
+                        "track {} already serves version code {version_code} to {held_fraction}; a rollout cannot be lowered to {user_fraction}",
                         self.track
                     ));
                 }
