@@ -75,7 +75,10 @@ macro_rules! ascapi_mcp_tools {
         $play_track_get_name:literal,
         $appgallery_app_info_get_name:literal,
         $appgallery_package_list_name:literal,
-        $appgallery_package_status_name:literal
+        $appgallery_package_status_name:literal,
+        $msstore_app_get_name:literal,
+        $msstore_submission_status_name:literal,
+        $msstore_listing_get_name:literal
     ) => {
         #[::rmcp::tool_router(router = ascapi_tool_router, vis = "pub(crate)")]
         impl $server {
@@ -1104,6 +1107,72 @@ macro_rules! ascapi_mcp_tools {
                     .map_err(|error| ::rmcp::model::ErrorData::invalid_request(error, None))?;
                 let request = parameters.0;
                 let value = appgallery::package_status(&client, &request.app, &request.pkg_ids)
+                    .await
+                    .map_err(|error| ::rmcp::model::ErrorData::internal_error(error, None))?;
+                Ok(::rmcp::model::CallToolResult::success(vec![
+                    ::rmcp::model::ContentBlock::json(&value)?,
+                ]))
+            }
+
+            #[::rmcp::tool(
+                name = $msstore_app_get_name,
+                title = "Get a Microsoft Store app",
+                annotations(title = "Get a Microsoft Store app", read_only_hint = true, idempotent_hint = true),
+                description = "Purpose: read a Microsoft Store app record, including its pending submission when a draft exists. When to use vs siblings: use msstore_submission_status for the draft's certification state and msstore_listing_get for listing text. Behavior: returns the app's Store record as the submission API reports it. Limitations: read-only; changing a listing is available only through the asc msstore listings update command. Prerequisites: Partner Center API credentials in a dotenv file at MSSTORE_ENV_PATH, or the MSSTORE_TENANT_ID, MSSTORE_CLIENT_ID, MSSTORE_CLIENT_SECRET, MSSTORE_SELLER_ID and MSSTORE_PRODUCT_ID variables. Failure modes: missing credentials return an invalid-request error naming what is absent; Microsoft Store errors are returned verbatim with their status."
+            )]
+            async fn msstore_app_get(
+                &self,
+                parameters: ::rmcp::handler::server::wrapper::Parameters<$crate::MsStoreProductRequest>,
+            ) -> ::std::result::Result<::rmcp::model::CallToolResult, ::rmcp::model::ErrorData> {
+                use ::smbcloud_ascapi_frontend::msstore;
+                let client = msstore::msstore_client(None)
+                    .map_err(|error| ::rmcp::model::ErrorData::invalid_request(error, None))?;
+                let request = parameters.0;
+                let value = msstore::read_app(&client, request.product_id.as_deref())
+                    .await
+                    .map_err(|error| ::rmcp::model::ErrorData::internal_error(error, None))?;
+                Ok(::rmcp::model::CallToolResult::success(vec![
+                    ::rmcp::model::ContentBlock::json(&value)?,
+                ]))
+            }
+
+            #[::rmcp::tool(
+                name = $msstore_submission_status_name,
+                title = "Get Microsoft Store submission status",
+                annotations(title = "Get Microsoft Store submission status", read_only_hint = true, idempotent_hint = true),
+                description = "Purpose: read the id and status of the pending Microsoft Store submission, and the id of the last published one. When to use vs siblings: use msstore_app_get for the whole app record and msstore_listing_get for listing text. Behavior: reports no pending submission when there is no draft. Limitations: read-only; the Store does not commit anything from this tool. Prerequisites: Partner Center API credentials in a dotenv file at MSSTORE_ENV_PATH, or the MSSTORE_TENANT_ID, MSSTORE_CLIENT_ID, MSSTORE_CLIENT_SECRET, MSSTORE_SELLER_ID and MSSTORE_PRODUCT_ID variables. Failure modes: missing credentials return an invalid-request error naming what is absent; Microsoft Store errors are returned verbatim with their status."
+            )]
+            async fn msstore_submission_status(
+                &self,
+                parameters: ::rmcp::handler::server::wrapper::Parameters<$crate::MsStoreProductRequest>,
+            ) -> ::std::result::Result<::rmcp::model::CallToolResult, ::rmcp::model::ErrorData> {
+                use ::smbcloud_ascapi_frontend::msstore;
+                let client = msstore::msstore_client(None)
+                    .map_err(|error| ::rmcp::model::ErrorData::invalid_request(error, None))?;
+                let request = parameters.0;
+                let value = msstore::submission_status(&client, request.product_id.as_deref())
+                    .await
+                    .map_err(|error| ::rmcp::model::ErrorData::internal_error(error, None))?;
+                Ok(::rmcp::model::CallToolResult::success(vec![
+                    ::rmcp::model::ContentBlock::json(&value)?,
+                ]))
+            }
+
+            #[::rmcp::tool(
+                name = $msstore_listing_get_name,
+                title = "Get a Microsoft Store listing",
+                annotations(title = "Get a Microsoft Store listing", read_only_hint = true, idempotent_hint = true),
+                description = "Purpose: read one locale's listing text (title, short description, description, release notes, features, search terms) from the pending submission, or from the last published one when there is no draft. When to use vs siblings: use msstore_submission_status for state. Behavior: returns the fields the listing holds and the submission id they came from. Limitations: read-only; writing a listing is available only through the asc msstore listings update command. Prerequisites: Partner Center API credentials in a dotenv file at MSSTORE_ENV_PATH, or the MSSTORE_TENANT_ID, MSSTORE_CLIENT_ID, MSSTORE_CLIENT_SECRET, MSSTORE_SELLER_ID and MSSTORE_PRODUCT_ID variables. Failure modes: missing credentials return an invalid-request error naming what is absent; Microsoft Store errors are returned verbatim with their status."
+            )]
+            async fn msstore_listing_get(
+                &self,
+                parameters: ::rmcp::handler::server::wrapper::Parameters<$crate::MsStoreListingGetRequest>,
+            ) -> ::std::result::Result<::rmcp::model::CallToolResult, ::rmcp::model::ErrorData> {
+                use ::smbcloud_ascapi_frontend::msstore;
+                let client = msstore::msstore_client(None)
+                    .map_err(|error| ::rmcp::model::ErrorData::invalid_request(error, None))?;
+                let request = parameters.0;
+                let value = msstore::read_listing(&client, request.product_id.as_deref(), &request.locale)
                     .await
                     .map_err(|error| ::rmcp::model::ErrorData::internal_error(error, None))?;
                 Ok(::rmcp::model::CallToolResult::success(vec![

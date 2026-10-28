@@ -30,6 +30,7 @@ use smbcloud_ascapi_frontend::attach_build::attach_build;
 use smbcloud_ascapi_frontend::await_processing::{await_processing, AwaitConfig};
 use smbcloud_ascapi_frontend::review;
 use smbcloud_ascapi_frontend::upload::{self, upload_package, validate_app, AltoolAuth, AltoolOp};
+use smbcloud_ascapi_msstore::ListingFields as MsStoreListingFields;
 use smbcloud_ascapi_play::{ImageType as PlayImageType, ListingFields as PlayListingFields};
 use smbcloud_ascapi_pricing::app_price::PriceKind;
 use smbcloud_ascapi_pricing::prelude::*;
@@ -561,6 +562,94 @@ enum PlayTracksCommand {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
+enum MsStoreCommand {
+    /// The app record, including its pending submission when a draft exists.
+    App {
+        /// Store product id; defaults to MSSTORE_PRODUCT_ID.
+        #[arg(long)]
+        product_id: Option<String>,
+    },
+    /// Submissions of the app.
+    Submissions {
+        #[command(subcommand)]
+        command: MsStoreSubmissionsCommand,
+    },
+    /// Localized store listing text.
+    Listings {
+        #[command(subcommand)]
+        command: MsStoreListingsCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum MsStoreSubmissionsCommand {
+    /// Id and status of the pending submission, if any.
+    Status {
+        #[arg(long)]
+        product_id: Option<String>,
+    },
+    /// The packages and listing locales of a submission: the pending one,
+    /// else the last published one, unless `--submission-id` names one.
+    Get {
+        #[arg(long)]
+        product_id: Option<String>,
+        #[arg(long)]
+        submission_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
+enum MsStoreListingsCommand {
+    /// One locale's listing text, from the pending submission or, with no
+    /// draft, the last published one.
+    Get {
+        #[arg(long)]
+        product_id: Option<String>,
+        #[arg(long)]
+        locale: String,
+    },
+    /// Write listing text into the pending submission (one is created only
+    /// when none exists), then read it back. Never commits to certification.
+    /// With `--dry-run` the diff is printed and nothing is written.
+    Update {
+        #[arg(long)]
+        product_id: Option<String>,
+        #[arg(long)]
+        locale: String,
+        /// Title, up to 256 characters.
+        #[arg(long, conflicts_with = "title_file")]
+        title: Option<String>,
+        /// Read the title from a UTF-8 file; one trailing newline is dropped.
+        #[arg(long)]
+        title_file: Option<PathBuf>,
+        /// Short description, up to 1000 characters.
+        #[arg(long, conflicts_with = "short_description_file")]
+        short_description: Option<String>,
+        #[arg(long)]
+        short_description_file: Option<PathBuf>,
+        /// Description, up to 10000 characters.
+        #[arg(long, conflicts_with = "description_file")]
+        description: Option<String>,
+        #[arg(long)]
+        description_file: Option<PathBuf>,
+        /// Release notes, up to 1500 characters.
+        #[arg(long, conflicts_with = "release_notes_file")]
+        release_notes: Option<String>,
+        #[arg(long)]
+        release_notes_file: Option<PathBuf>,
+        /// UTF-8 file with one feature per line (up to 20, 200 characters each).
+        #[arg(long)]
+        features_file: Option<PathBuf>,
+        /// UTF-8 file with one search term per line (up to 7, 30 characters
+        /// and 21 words in total).
+        #[arg(long)]
+        keywords_file: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
 enum Command {
     /// Huawei AppGallery listing text. Uses an AppGallery Connect Service
     /// Account, not the App Store Connect key.
@@ -588,6 +677,16 @@ enum Command {
         play_service_account: Option<PathBuf>,
         #[command(subcommand)]
         command: PlayCommand,
+    },
+    /// Microsoft Store listings: text on the app's pending submission. Uses
+    /// Partner Center API credentials, not the App Store Connect key.
+    Msstore {
+        /// Dotenv file with the MSSTORE_* credentials. Falls back to
+        /// `MSSTORE_ENV_PATH`, then to the MSSTORE_* variables themselves.
+        #[arg(long, global = true)]
+        msstore_env: Option<PathBuf>,
+        #[command(subcommand)]
+        command: MsStoreCommand,
     },
     /// Look up apps by bundle ID, or a specific app by its ASC app ID.
     Apps {
@@ -904,6 +1003,108 @@ async fn run_appgallery(
                 let result = appgallery::delete_language(&client, &app, &lang, dry_run)
                     .await
                     .map_err(fail)?;
+                print_json(&result)
+            }
+        },
+    }
+}
+
+/// One non-empty trimmed line per entry, from a UTF-8 file.
+fn lines_arg(file: Option<PathBuf>, flag: &str) -> Result<Option<Vec<String>>> {
+    let Some(path) = file else {
+        return Ok(None);
+    };
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("{flag}: cannot read {} as UTF-8 text", path.display()))?;
+    Ok(Some(
+        text.lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect(),
+    ))
+}
+
+async fn run_msstore(
+    env_path: Option<&std::path::Path>,
+    command: MsStoreCommand,
+    dry_run: bool,
+) -> Result<()> {
+    use smbcloud_ascapi_frontend::msstore;
+    let client = msstore::msstore_client(env_path).map_err(|e| anyhow::anyhow!(e))?;
+    let fail = |e: String| anyhow::anyhow!(e);
+    match command {
+        MsStoreCommand::App { product_id } => print_json(
+            &msstore::read_app(&client, product_id.as_deref())
+                .await
+                .map_err(fail)?,
+        ),
+        MsStoreCommand::Submissions { command } => match command {
+            MsStoreSubmissionsCommand::Status { product_id } => print_json(
+                &msstore::submission_status(&client, product_id.as_deref())
+                    .await
+                    .map_err(fail)?,
+            ),
+            MsStoreSubmissionsCommand::Get {
+                product_id,
+                submission_id,
+            } => print_json(
+                &msstore::read_submission(&client, product_id.as_deref(), submission_id.as_deref())
+                    .await
+                    .map_err(fail)?,
+            ),
+        },
+        MsStoreCommand::Listings { command } => match command {
+            MsStoreListingsCommand::Get { product_id, locale } => print_json(
+                &msstore::read_listing(&client, product_id.as_deref(), &locale)
+                    .await
+                    .map_err(fail)?,
+            ),
+            MsStoreListingsCommand::Update {
+                product_id,
+                locale,
+                title,
+                title_file,
+                short_description,
+                short_description_file,
+                description,
+                description_file,
+                release_notes,
+                release_notes_file,
+                features_file,
+                keywords_file,
+            } => {
+                let fields = MsStoreListingFields {
+                    title: text_arg(title, title_file, "--title-file")?,
+                    short_description: text_arg(
+                        short_description,
+                        short_description_file,
+                        "--short-description-file",
+                    )?,
+                    description: text_arg(description, description_file, "--description-file")?,
+                    release_notes: text_arg(
+                        release_notes,
+                        release_notes_file,
+                        "--release-notes-file",
+                    )?,
+                    features: lines_arg(features_file, "--features-file")?,
+                    keywords: lines_arg(keywords_file, "--keywords-file")?,
+                };
+                let result = msstore::update_listing(
+                    &client,
+                    product_id.as_deref(),
+                    &locale,
+                    fields,
+                    dry_run,
+                )
+                .await
+                .map_err(fail)?;
+                for warning in &result.warnings {
+                    eprintln!("warning: {warning}");
+                }
+                if result.dry_run {
+                    println!("# dry run: nothing was written; changes that would be made:");
+                }
                 print_json(&result)
             }
         },
@@ -2162,6 +2363,14 @@ async fn main() -> Result<()> {
         return run_play(play_service_account.as_deref(), command, cli.dry_run).await;
     }
 
+    if let Some(Command::Msstore {
+        msstore_env,
+        command,
+    }) = cli.command
+    {
+        return run_msstore(msstore_env.as_deref(), command, cli.dry_run).await;
+    }
+
     let key_id = cli
         .key_id
         .clone()
@@ -2193,7 +2402,7 @@ async fn main() -> Result<()> {
     };
 
     match command {
-        Command::AppGallery { .. } | Command::Play { .. } => {
+        Command::AppGallery { .. } | Command::Msstore { .. } | Command::Play { .. } => {
             unreachable!("handled before App Store Connect credentials")
         }
         Command::Apps { command } => run_apps(&client, &altool_auth, command, cli.dry_run).await,
