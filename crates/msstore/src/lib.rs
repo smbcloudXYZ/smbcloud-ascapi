@@ -5,7 +5,8 @@
 //! and search terms. Authentication is Entra client credentials, cached until
 //! shortly before the token expires. Submissions travel as
 //! [`serde_json::Value`] so only the listing keys are touched and everything
-//! else round-trips. Committing a submission is not implemented.
+//! else round-trips. A submission is sent to certification with
+//! [`MsStoreClient::commit_submission`].
 
 pub mod auth;
 pub mod client;

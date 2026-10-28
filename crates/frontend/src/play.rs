@@ -59,12 +59,15 @@ fn err(error: impl std::fmt::Display) -> String {
 /// the edit and returns the first error. A macro rather than a function so the
 /// body can borrow from the caller's scope.
 macro_rules! in_edit {
-    ($client:expr, $package:expr, $commit:expr, |$c:ident, $id:ident| $body:expr) => {{
+    ($client:expr, $package:expr, $commit:expr, |$c:ident, $id:ident| $body:expr) => {
+        in_edit!($client, $package, $commit, false, |$c, $id| $body)
+    };
+    ($client:expr, $package:expr, $commit:expr, $unsent:expr, |$c:ident, $id:ident| $body:expr) => {{
         let $c: &PlayClient = $client;
         let edit = $c.insert_edit($package).await.map_err(err)?;
         let $id: &str = edit.id.as_str();
         let outcome: Result<_, String> = $body.await;
-        finish($c, $package, $id, $commit, outcome).await
+        finish($c, $package, $id, $commit, $unsent, outcome).await
     }};
 }
 
@@ -73,13 +76,17 @@ async fn finish<T>(
     package: &str,
     edit_id: &str,
     commit: bool,
+    changes_not_sent_for_review: bool,
     outcome: Result<T, String>,
 ) -> Result<T, String> {
     let outcome = match outcome {
         Ok(value) if commit => {
             async {
                 client.validate_edit(package, edit_id).await.map_err(err)?;
-                client.commit_edit(package, edit_id).await.map_err(err)?;
+                client
+                    .commit_edit(package, edit_id, changes_not_sent_for_review)
+                    .await
+                    .map_err(err)?;
                 Ok(value)
             }
             .await
@@ -363,6 +370,92 @@ pub async fn set_track_notes(
         return Err("committed, but the read-back release notes differ".to_string());
     }
     Ok(NotesSet { dry_run, track })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Promoted {
+    pub dry_run: bool,
+    /// The target already held the code at this status and fraction.
+    pub noop: bool,
+    /// The source track as read.
+    pub from: Track,
+    /// The target track as it will be (dry run or no-op) or is (read back
+    /// after commit).
+    pub to: Track,
+}
+
+/// Promote `version_code` from one track to another inside one edit: get both
+/// tracks, plan, update the target, validate and commit. A dry run deletes the
+/// edit. After the commit the target is read back and compared.
+#[allow(clippy::too_many_arguments)]
+pub async fn promote_track(
+    client: &PlayClient,
+    package: &str,
+    from_track: &str,
+    to_track: &str,
+    version_code: &str,
+    user_fraction: f64,
+    changes_not_sent_for_review: bool,
+    dry_run: bool,
+) -> Result<Promoted, String> {
+    if from_track == to_track {
+        return Err("--from and --to are the same track".to_string());
+    }
+    let (from, plan) = in_edit!(
+        client,
+        package,
+        !dry_run,
+        changes_not_sent_for_review,
+        |c, id| {
+            Box::pin(async move {
+                let source = c.get_track(package, id, from_track).await.map_err(err)?;
+                let target = c.get_track(package, id, to_track).await.map_err(err)?;
+                let plan = target.promote_from(&source, version_code, user_fraction)?;
+                if !dry_run && !plan.noop {
+                    c.update_track(package, id, &plan.target)
+                        .await
+                        .map_err(err)?;
+                }
+                Ok((source, plan))
+            })
+        }
+    )?;
+    if dry_run || plan.noop {
+        return Ok(Promoted {
+            dry_run,
+            noop: plan.noop,
+            from,
+            to: plan.target,
+        });
+    }
+    let stored = read_track(client, package, to_track).await?;
+    let full = user_fraction >= 1.0;
+    let landed = stored
+        .releases
+        .iter()
+        .filter(|r| r.version_codes.iter().any(|c| c == version_code))
+        .any(|r| {
+            if full {
+                r.status.as_deref() == Some("completed")
+            } else {
+                r.status.as_deref() == Some("inProgress")
+                    && r.user_fraction
+                        .is_some_and(|f| (f - user_fraction).abs() < 1e-9)
+            }
+        });
+    if !landed {
+        return Err(format!(
+            "committed, but {to_track} does not show version code {version_code} at the \
+             requested status and fraction"
+        ));
+    }
+    Ok(Promoted {
+        dry_run,
+        noop: false,
+        from,
+        to: stored,
+    })
 }
 
 #[cfg(test)]

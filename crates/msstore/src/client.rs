@@ -106,6 +106,17 @@ impl MsStoreClient {
         .await
     }
 
+    /// Commit the submission to certification:
+    /// `POST /v1.0/my/applications/{id}/submissions/{sid}/commit`.
+    pub async fn commit_submission(&self, product_id: &str, submission_id: &str) -> Result<Value> {
+        self.send(
+            Method::POST,
+            &app_path(product_id, &format!("/submissions/{submission_id}/commit")),
+            None,
+        )
+        .await
+    }
+
     pub async fn delete_submission(&self, product_id: &str, submission_id: &str) -> Result<()> {
         self.send(
             Method::DELETE,
@@ -131,6 +142,10 @@ mod tests {
         assert_eq!(
             app_path("9P69", "/submissions/123/status"),
             "/v1.0/my/applications/9P69/submissions/123/status"
+        );
+        assert_eq!(
+            app_path("9P69", "/submissions/123/commit"),
+            "/v1.0/my/applications/9P69/submissions/123/commit"
         );
     }
 }

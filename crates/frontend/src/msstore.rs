@@ -4,8 +4,8 @@
 //! to reuse it, never replace it: the pending submission may already hold the
 //! uploaded package, so listing text is written into that one. Only when none
 //! exists is a submission created (cloned from the last published one). A
-//! submission that is being processed or certified is never touched, and
-//! nothing here commits a submission to certification.
+//! submission that is being processed or certified is never touched. Only
+//! [`commit_pending`] sends a submission to certification.
 
 use std::path::Path;
 
@@ -371,9 +371,171 @@ async fn write_and_verify(
     Ok((changes, Some(after)))
 }
 
+/// Statuses at or past the commit: the Store already has the submission, so a
+/// second commit would be refused.
+const PAST_COMMIT: [&str; 4] = ["CommitStarted", "PreProcessing", "Certification", "Release"];
+
+/// True when the submission has been committed, so committing again is a
+/// no-op.
+pub fn is_past_commit(status: &str) -> bool {
+    PAST_COMMIT.contains(&status)
+}
+
+/// Versions of the packages that will ship: every entry of
+/// `applicationPackages[]` whose `fileStatus` is not `PendingDelete`.
+pub fn package_versions(submission: &Value) -> Vec<String> {
+    submission
+        .get("applicationPackages")
+        .and_then(Value::as_array)
+        .map(|packages| {
+            packages
+                .iter()
+                .filter(|p| str_at(p, "/fileStatus") != Some("PendingDelete"))
+                .filter_map(|p| str_at(p, "/version").map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The error messages of a status record, for a `...Failed` status.
+fn status_errors(status: &Value) -> Vec<String> {
+    status
+        .pointer("/statusDetails/errors")
+        .and_then(Value::as_array)
+        .map(|errors| {
+            errors
+                .iter()
+                .map(|e| {
+                    let code = str_at(e, "/code").unwrap_or("");
+                    let details = str_at(e, "/details").unwrap_or("");
+                    format!("{code}: {details}")
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Committed {
+    pub dry_run: bool,
+    /// The submission was already past the commit, so nothing was sent.
+    pub noop: bool,
+    pub submission_id: String,
+    pub package_versions: Vec<String>,
+    /// The status before this call.
+    pub status_before: String,
+    /// The status after the commit and the wait. `None` on a dry run or no-op.
+    pub status_after: Option<String>,
+}
+
+/// Commit the pending submission to certification.
+///
+/// Fails closed before writing when there is no pending submission or, with
+/// `expect_package_version`, when no shipping package has that version. A
+/// submission already committed is a no-op. After the commit the status is
+/// polled until it leaves `CommitStarted` or `wait_seconds` runs out; a status
+/// ending in `Failed` is an error carrying the status details.
+pub async fn commit_pending(
+    client: &MsStoreClient,
+    product_id: Option<&str>,
+    expect_package_version: Option<&str>,
+    wait_seconds: u64,
+    dry_run: bool,
+) -> Result<Committed, String> {
+    let product_id = product(client, product_id);
+    let app = client.get_app(product_id).await.map_err(err)?;
+    let id = str_at(&app, "/pendingApplicationSubmission/id")
+        .ok_or("the app has no pending submission to commit")?
+        .to_string();
+    let submission = client.get_submission(product_id, &id).await.map_err(err)?;
+    let versions = package_versions(&submission);
+    if let Some(expected) = expect_package_version {
+        if !versions.iter().any(|v| v == expected) {
+            return Err(format!(
+                "submission {id} carries package versions [{}], not {expected}; nothing was committed",
+                versions.join(", ")
+            ));
+        }
+    }
+    let status = client
+        .submission_status(product_id, &id)
+        .await
+        .map_err(err)?;
+    let before = str_at(&status, "/status").unwrap_or("").to_string();
+    let result = |noop, after| Committed {
+        dry_run,
+        noop,
+        submission_id: id.clone(),
+        package_versions: versions.clone(),
+        status_before: before.clone(),
+        status_after: after,
+    };
+    if is_past_commit(&before) {
+        return Ok(result(true, None));
+    }
+    if dry_run {
+        return Ok(result(false, None));
+    }
+    client
+        .commit_submission(product_id, &id)
+        .await
+        .map_err(err)?;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait_seconds);
+    loop {
+        let status = client
+            .submission_status(product_id, &id)
+            .await
+            .map_err(err)?;
+        let current = str_at(&status, "/status").unwrap_or("").to_string();
+        if current.ends_with("Failed") {
+            return Err(format!(
+                "submission {id} is {current}: {}",
+                status_errors(&status).join("; ")
+            ));
+        }
+        if current != "CommitStarted" || std::time::Instant::now() >= deadline {
+            return Ok(result(false, Some(current)));
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn submission() -> Value {
+        serde_json::json!({"applicationPackages": [
+            {"fileName": "a.msix", "version": "1.3.1.0", "fileStatus": "PendingDelete"},
+            {"fileName": "b.msix", "version": "1.3.2.0", "fileStatus": "Uploaded"},
+            {"fileName": "c.msix", "version": "1.3.2.0"}
+        ]})
+    }
+
+    #[test]
+    fn package_versions_skip_packages_pending_delete() {
+        assert_eq!(package_versions(&submission()), vec!["1.3.2.0", "1.3.2.0"]);
+        assert!(package_versions(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn only_committed_statuses_are_past_commit() {
+        for s in ["CommitStarted", "PreProcessing", "Certification", "Release"] {
+            assert!(is_past_commit(s));
+        }
+        for s in ["PendingCommit", "CommitFailed", ""] {
+            assert!(!is_past_commit(s));
+        }
+    }
+
+    #[test]
+    fn failed_statuses_list_their_errors() {
+        let status = serde_json::json!({"status": "CommitFailed", "statusDetails": {"errors": [
+            {"code": "InvalidState", "details": "bad package"}]}});
+        assert_eq!(status_errors(&status), vec!["InvalidState: bad package"]);
+    }
 
     #[test]
     fn locked_statuses_cover_the_in_flight_states() {

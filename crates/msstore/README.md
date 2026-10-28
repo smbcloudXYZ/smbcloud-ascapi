@@ -17,4 +17,6 @@ let app = client.get_app(&product).await?;
 
 Submissions are kept as `serde_json::Value`. Only the listing keys are
 replaced, so packages, pricing and everything else round-trip untouched.
-Committing a submission to certification is deliberately not implemented.
+`MsStoreClient::commit_submission` sends the pending submission to
+certification; `asc msstore submissions commit` wraps it with a check of the
+uploaded package version and a wait for the status to leave `CommitStarted`.

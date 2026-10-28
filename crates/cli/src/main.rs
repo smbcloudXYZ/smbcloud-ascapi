@@ -559,6 +559,26 @@ enum PlayTracksCommand {
         #[arg(long)]
         notes_file: Option<PathBuf>,
     },
+    /// Promote a version code from one track to another, for example
+    /// internal to production, in one edit. A staged rollout is the default
+    /// shape: pass `--user-fraction 1.0` to release to everyone. With
+    /// `--dry-run` the edit is deleted and the planned track is printed.
+    Promote {
+        package: String,
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        version_code: String,
+        /// Share of users to roll out to, above 0 and up to 1.0.
+        #[arg(long, default_value_t = 1.0)]
+        user_fraction: f64,
+        /// Commit with changesNotSentForReview, for apps that have rejected
+        /// changes pending.
+        #[arg(long)]
+        changes_not_sent_for_review: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -596,6 +616,19 @@ enum MsStoreSubmissionsCommand {
         product_id: Option<String>,
         #[arg(long)]
         submission_id: Option<String>,
+    },
+    /// Send the pending submission to certification, then wait for the
+    /// status to leave CommitStarted. A submission already committed is a
+    /// no-op. With `--dry-run` the plan is printed and nothing is sent.
+    Commit {
+        #[arg(long)]
+        product_id: Option<String>,
+        /// Refuse unless a shipping package has this version, e.g. 1.3.2.0.
+        #[arg(long)]
+        expect_package_version: Option<String>,
+        /// How long to wait for the status to leave CommitStarted.
+        #[arg(long, default_value_t = 120)]
+        wait_seconds: u64,
     },
 }
 
@@ -1045,6 +1078,25 @@ async fn run_msstore(
                     .await
                     .map_err(fail)?,
             ),
+            MsStoreSubmissionsCommand::Commit {
+                product_id,
+                expect_package_version,
+                wait_seconds,
+            } => {
+                let result = msstore::commit_pending(
+                    &client,
+                    product_id.as_deref(),
+                    expect_package_version.as_deref(),
+                    wait_seconds,
+                    dry_run,
+                )
+                .await
+                .map_err(fail)?;
+                if result.dry_run {
+                    println!("# dry run: nothing was committed; plan:");
+                }
+                print_json(&result)
+            }
             MsStoreSubmissionsCommand::Get {
                 product_id,
                 submission_id,
@@ -1217,6 +1269,31 @@ async fn run_play(
                 .map_err(fail)?;
                 if result.dry_run {
                     println!("# dry run: nothing was committed; track as it would be:");
+                }
+                print_json(&result)
+            }
+            PlayTracksCommand::Promote {
+                package,
+                from,
+                to,
+                version_code,
+                user_fraction,
+                changes_not_sent_for_review,
+            } => {
+                let result = play::promote_track(
+                    &client,
+                    &package,
+                    &from,
+                    &to,
+                    &version_code,
+                    user_fraction,
+                    changes_not_sent_for_review,
+                    dry_run,
+                )
+                .await
+                .map_err(fail)?;
+                if result.dry_run {
+                    println!("# dry run: the edit was deleted; target track as it would be:");
                 }
                 print_json(&result)
             }

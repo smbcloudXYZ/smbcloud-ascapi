@@ -123,8 +123,21 @@ impl PlayClient {
         Ok(())
     }
 
-    pub async fn commit_edit(&self, package: &str, edit_id: &str) -> Result<()> {
-        let path = edits_path(package, &format!("/{edit_id}:commit"));
+    /// Commit the edit. `changes_not_sent_for_review` is for apps with
+    /// rejected changes pending: Play then publishes without sending them
+    /// for review again.
+    pub async fn commit_edit(
+        &self,
+        package: &str,
+        edit_id: &str,
+        changes_not_sent_for_review: bool,
+    ) -> Result<()> {
+        let query = if changes_not_sent_for_review {
+            "?changesNotSentForReview=true"
+        } else {
+            ""
+        };
+        let path = edits_path(package, &format!("/{edit_id}:commit{query}"));
         self.send(
             Method::POST,
             &path,
