@@ -13,6 +13,7 @@ use smbcloud_ascapi_aso::app_info_localization::{
 use smbcloud_ascapi_aso::app_screenshot_set::{
     AppScreenshotSetCreateAttributes, ScreenshotDisplayType,
 };
+use smbcloud_ascapi_aso::app_store_review_detail::{AppStoreReviewDetailWrite, NOTES_MAX_LEN};
 use smbcloud_ascapi_aso::app_store_version::{
     AppStoreVersionCreateAttributes, AppStoreVersionUpdateFields, Platform,
 };
@@ -604,6 +605,12 @@ enum Command {
         #[command(subcommand)]
         command: AppStoreVersionsCommand,
     },
+    /// The App Review Information of an App Store Version: contact, demo
+    /// account and notes for the reviewer.
+    AppStoreReviewDetails {
+        #[command(subcommand)]
+        command: AppStoreReviewDetailsCommand,
+    },
     /// Send an App Store Version to App Review, see what's waiting, or
     /// withdraw a submission that hasn't been reviewed yet.
     ReviewSubmissions {
@@ -1119,6 +1126,50 @@ enum BetaGroupsCommand {
         #[arg(long = "build-id", required = true, num_args = 1..)]
         build_ids: Vec<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum AppStoreReviewDetailsCommand {
+    /// Show the review information of a version, or `null` when it has none.
+    Get {
+        /// The App Store Version id.
+        app_store_version_id: String,
+    },
+    /// Set the review information of a version. Creates it when the version
+    /// has none. Only supplied flags are sent. Each `--<field>-file` conflicts
+    /// with its inline flag.
+    Set(Box<ReviewDetailSetArgs>),
+}
+
+#[derive(clap::Args)]
+struct ReviewDetailSetArgs {
+    /// The App Store Version id.
+    app_store_version_id: String,
+    #[arg(long)]
+    contact_first_name: Option<String>,
+    #[arg(long)]
+    contact_last_name: Option<String>,
+    #[arg(long)]
+    contact_phone: Option<String>,
+    #[arg(long)]
+    contact_email: Option<String>,
+    /// Demo account username.
+    #[arg(long)]
+    demo_account_name: Option<String>,
+    /// Demo account password. Prefer `--demo-account-password-file` so it
+    /// stays out of shell history.
+    #[arg(long, conflicts_with = "demo_account_password_file")]
+    demo_account_password: Option<String>,
+    #[arg(long)]
+    demo_account_password_file: Option<std::path::PathBuf>,
+    /// Whether the reviewer needs the demo account to sign in.
+    #[arg(long)]
+    demo_account_required: Option<bool>,
+    /// Notes for the reviewer (max 4000 characters).
+    #[arg(long, conflicts_with = "notes_file")]
+    notes: Option<String>,
+    #[arg(long)]
+    notes_file: Option<std::path::PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -2150,6 +2201,9 @@ async fn main() -> Result<()> {
         Command::AppStoreVersions { command } => {
             run_app_store_versions(&client, command, cli.dry_run).await
         }
+        Command::AppStoreReviewDetails { command } => {
+            run_app_store_review_details(&client, command, cli.dry_run).await
+        }
         Command::AppInfoLocalizations { command } => {
             run_app_info_localizations(&client, command, cli.dry_run).await
         }
@@ -2514,6 +2568,89 @@ async fn run_bundle_ids(client: &Client, command: BundleIdsCommand, dry_run: boo
                 return Ok(());
             }
             print_json(&client.create_bundle_id(attributes).await?)
+        }
+    }
+}
+
+async fn run_app_store_review_details(
+    client: &Client,
+    command: AppStoreReviewDetailsCommand,
+    dry_run: bool,
+) -> Result<()> {
+    match command {
+        AppStoreReviewDetailsCommand::Get {
+            app_store_version_id,
+        } => {
+            let detail = client
+                .get_app_store_review_detail(&app_store_version_id)
+                .await?;
+            print_json(&detail)
+        }
+        AppStoreReviewDetailsCommand::Set(args) => {
+            let ReviewDetailSetArgs {
+                app_store_version_id,
+                contact_first_name,
+                contact_last_name,
+                contact_phone,
+                contact_email,
+                demo_account_name,
+                demo_account_password,
+                demo_account_password_file,
+                demo_account_required,
+                notes,
+                notes_file,
+            } = *args;
+            let write = AppStoreReviewDetailWrite {
+                contact_first_name,
+                contact_last_name,
+                contact_phone,
+                contact_email,
+                demo_account_name,
+                demo_account_password: text_arg(
+                    demo_account_password,
+                    demo_account_password_file,
+                    "--demo-account-password-file",
+                )?,
+                demo_account_required,
+                notes: text_arg(notes, notes_file, "--notes-file")?,
+            };
+            if let Some(notes) = &write.notes {
+                if notes.chars().count() > NOTES_MAX_LEN {
+                    anyhow::bail!("notes are over {NOTES_MAX_LEN} characters");
+                }
+            }
+            let existing = client
+                .get_app_store_review_detail(&app_store_version_id)
+                .await?;
+            if dry_run {
+                let mut shown = serde_json::to_value(&write)?;
+                // The password is never printed.
+                if shown.get("demoAccountPassword").is_some() {
+                    shown["demoAccountPassword"] = "<hidden>".into();
+                }
+                println!(
+                    "[dry-run] would {} the review information of version {app_store_version_id}:",
+                    if existing.is_some() {
+                        "update"
+                    } else {
+                        "create"
+                    }
+                );
+                return print_json(&shown);
+            }
+            let saved = match existing {
+                Some(detail) => {
+                    client
+                        .update_app_store_review_detail(&detail.id, write)
+                        .await?
+                }
+                None => {
+                    client
+                        .create_app_store_review_detail(&app_store_version_id, write)
+                        .await?
+                }
+            };
+            print_json(&saved)
         }
     }
 }
