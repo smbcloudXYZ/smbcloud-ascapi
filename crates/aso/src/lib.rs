@@ -25,6 +25,7 @@ pub mod app_info;
 pub mod app_info_localization;
 pub mod app_screenshot;
 pub mod app_screenshot_set;
+pub mod app_store_review_detail;
 pub mod app_store_version;
 pub mod app_store_version_localization;
 pub mod beta_app_review_detail;
@@ -42,6 +43,7 @@ pub mod prelude {
     pub use crate::app_info_localization::AppInfoLocalizationsApi;
     pub use crate::app_screenshot::AppScreenshotsApi;
     pub use crate::app_screenshot_set::AppScreenshotSetsApi;
+    pub use crate::app_store_review_detail::AppStoreReviewDetailApi;
     pub use crate::app_store_version::AppStoreVersionsApi;
     pub use crate::app_store_version_localization::AppStoreVersionLocalizationsApi;
     pub use crate::beta_app_review_detail::BetaAppReviewDetailApi;

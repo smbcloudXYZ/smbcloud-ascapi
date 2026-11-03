@@ -1,0 +1,19 @@
+[package]
+name = "smbcloud-ascapi-msstore"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Microsoft Store submission API v1.0: store listing text on an MSIX app's submission, authenticated with Entra client credentials."
+readme = "README.md"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+reqwest = { workspace = true, features = ["json", "rustls-tls-native-roots"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time"] }

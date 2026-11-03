@@ -15,6 +15,8 @@ concurrency:
 
 permissions:
   contents: write
+  # Lets the release job dispatch release-homebrew.yml.
+  actions: write
 
 env:
   PROJECT_NAME: asc
@@ -95,6 +97,23 @@ jobs:
           mkdir -p ./release
           mv "${BIN_OUTPUT}" "./release/${BIN_RELEASE}"
 
+      - name: Package macOS tarball for Homebrew
+        if: contains(matrix.target, 'apple-darwin')
+        shell: bash
+        run: |
+          ARCHIVE_NAME="${PROJECT_NAME}-${{ matrix.name }}.tar.gz"
+
+          mkdir -p staging-brew
+          cp "./release/${PROJECT_NAME}-${{ matrix.name }}" "staging-brew/${PROJECT_NAME}"
+          strip "staging-brew/${PROJECT_NAME}"
+
+          tar -C staging-brew -czf "${ARCHIVE_NAME}" "${PROJECT_NAME}"
+
+          shasum -a 256 "${ARCHIVE_NAME}" | awk '{print $1}' > "${ARCHIVE_NAME}.sha256"
+
+          echo "Archive: ${ARCHIVE_NAME}"
+          echo "SHA256:  $(cat "${ARCHIVE_NAME}.sha256")"
+
       # Windows runners use bash from Git for Windows, which has sha256sum;
       # macOS only has shasum.
       - name: Checksum release assets
@@ -118,6 +137,15 @@ jobs:
         with:
           name: binary-${{ matrix.name }}
           path: release/*
+
+      - name: Upload macOS Homebrew artifacts
+        if: contains(matrix.target, 'apple-darwin')
+        uses: actions/upload-artifact@v7
+        with:
+          name: homebrew-${{ matrix.name }}
+          path: |
+            ${{ env.PROJECT_NAME }}-${{ matrix.name }}.tar.gz
+            ${{ env.PROJECT_NAME }}-${{ matrix.name }}.tar.gz.sha256
 
   release:
     name: Create GitHub Release
@@ -143,6 +171,13 @@ jobs:
           path: release
           merge-multiple: true
 
+      - name: Download Homebrew artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: "homebrew-*"
+          path: release
+          merge-multiple: true
+
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
@@ -151,3 +186,31 @@ jobs:
           # Build the notes from the PRs since the previous tag, the same
           # format as the "Generate release notes" button on the web UI.
           generate_release_notes: true
+
+      # The tap reads checksums off the release created above, so the
+      # dispatch hangs off this job rather than firing on the tag directly.
+      - name: Trigger OS package manager releases
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const tag = '${{ steps.tag.outputs.tag }}'
+            const workflows = [
+              'release-homebrew.yml',
+            ]
+
+            for (const workflow_id of workflows) {
+              try {
+                await github.rest.actions.createWorkflowDispatch({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  workflow_id,
+                  ref: tag,
+                  inputs: { tag },
+                })
+                console.log(`Dispatched ${workflow_id} for tag ${tag}`)
+              } catch (error) {
+                // One packaging channel being unconfigured (a missing secret)
+                // should not fail a release that already published.
+                core.warning(`Failed to dispatch ${workflow_id}: ${error.message}`)
+              }
+            }

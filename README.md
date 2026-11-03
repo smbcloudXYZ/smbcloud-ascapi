@@ -1,47 +1,50 @@
-# smbcloud-ascapi
+<p align="center">
+  <img src="https://avatars.githubusercontent.com/u/89791739?s=200&v=4" alt="smbCloud Logo" width="96">
+</p>
 
-`smbcloud-ascapi` is the app stores coolest API.
+<h1 align="center">smbcloud-ascapi</h1>
 
-Eight crates, split by domain and layered so neither front end can drift
-from the other:
+<p align="center"><strong>App Store Connect, Google Play, Microsoft Store and Huawei AppGallery from your terminal, your scripts and your agents.</strong></p>
 
-| Crate | What it is |
-| --- | --- |
-| `smbcloud-ascapi-core` | Shared transport: JWT auth, the HTTP client, JSON:API envelopes, error types |
-| `smbcloud-ascapi-play` | Google Play (Edits v3): store listings, listing images, track release notes; service-account auth, independent of `core` |
-| `smbcloud-ascapi-aso` | App Metadata: apps, app infos, versions, builds, pre-release versions, review submissions, bundle IDs, localizations, screenshots |
-| `smbcloud-ascapi-pricing` | Pricing: app price schedules, and the per-territory prices joined with their price points and currencies |
-| `smbcloud-ascapi-signing` | Code signing: certificates and provisioning profiles, plus local RSA key pair and CSR generation |
-| `smbcloud-ascapi-reports` | Sales reports: account-level sales data, as Apple's gzip-compressed TSV |
-| `smbcloud-ascapi-frontend` | Operations both surfaces share, so the CLI and the MCP server agree by construction, plus the CLI's `xcrun altool` upload |
-| `smbcloud-ascapi-mcp` | The MCP contract and stdio server |
-| `smbcloud-ascapi-cli` | The `asc` binary: clap command tree, plus `--mcp` |
+<p align="center">
+  <a href="https://crates.io/crates/smbcloud-ascapi-cli"><img alt="Crates.io" src="https://img.shields.io/crates/v/smbcloud-ascapi-cli"></a>
+  <a href="https://github.com/smbcloudXYZ/homebrew-tap"><img alt="Homebrew" src="https://img.shields.io/badge/homebrew-tap-orange?logo=homebrew"></a>
+  <a href="https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.smbcloudXYZ/ascapi"><img alt="MCP server" src="https://badge.mcpx.dev?type=server&features=resources,tools" title="MCP server with features"></a>
+  <a href="https://github.com/smbcloudXYZ/smbcloud-ascapi/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/smbcloudXYZ/smbcloud-ascapi/ci.yml?label=ci"></a>
+  <a href="https://github.com/smbcloudXYZ/smbcloud-ascapi/blob/main/LICENSE"><img alt="Apache-2.0 License" src="https://img.shields.io/badge/license-Apache%202.0-blue.svg"></a>
+</p>
 
-`aso`, `play`, `pricing`, `signing` and `reports` know nothing about each other, and neither knows
-anything about the front ends. Each adds its calls to
-`smbcloud_ascapi_core::Client` as **extension traits**, since Rust only
-allows inherent impls in the crate that defines a type:
-
-```rust
-use smbcloud_ascapi_core::{ApiKey, Client};
-use smbcloud_ascapi_aso::prelude::*;      // or pricing::prelude, signing::prelude
-```
+`asc` manages your app store listings and releases: App Store Connect, Google Play, the Microsoft Store and Huawei AppGallery. The CLI and the MCP server sit on one shared core, so a person at a terminal, a CI job and an AI agent run the same operations.
 
 MCP Registry name: `mcp-name: io.github.smbcloudXYZ/ascapi`
 
-## Credentials
+## Install
 
-The CLI signs requests with an App Store Connect API key:
+```sh
+brew tap smbcloudXYZ/tap && brew trust --tap smbcloudXYZ/tap && brew install ascapi
+cargo install smbcloud-ascapi-cli
+```
 
-| Flag | Environment variable | Notes |
-| --- | --- | --- |
-| `--key-id` | `ASC_API_KEY` | The key id. There is no `ASC_KEY_ID`. |
-| `--issuer-id` | `ASC_ISSUER_ID` | The issuer id from App Store Connect. |
-| `--private-key-path` | `ASC_PRIVATE_KEY_PATH` | Defaults to `~/.appstoreconnect/private_keys/AuthKey_<key-id>.p8`. |
+Pre-built binaries are on [GitHub Releases](https://github.com/smbcloudXYZ/smbcloud-ascapi/releases). More detail in [docs/install.md](docs/install.md).
 
-With `--mcp`, credentials are resolved on each tool call, so the server can
-list its tools before they are configured.
+## Use it your way
+
+- **In the terminal.** `asc apps ...` lists apps, builds and versions. Credentials are in [docs/credentials.md](docs/credentials.md).
+- **In scripts and CI.** Every write takes `--dry-run`, and credentials come from environment variables. See [docs/credentials.md](docs/credentials.md).
+- **With AI agents.** `asc --mcp` serves the [Model Context Protocol](https://modelcontextprotocol.io) over stdio. See [docs/architecture.md](docs/architecture.md).
+
+## Docs
+
+[Install](docs/install.md) · [Credentials](docs/credentials.md) · [AppGallery](docs/appgallery.md) · [Architecture](docs/architecture.md)
+
+## Contributing
+
+Open pull requests against `development`.
+
+## License
+
+[Apache-2.0](LICENSE)
 
 ## Copyright
 
-© 2026 PT Sigit Mitra Bangun ([smbCloud](https://smbcloud.xyz)).
+© 2026 Seto Elkahfi ([smbCloud](https://smbcloud.xyz)). Distributed by [Splitfire AB](https://5mb.app).

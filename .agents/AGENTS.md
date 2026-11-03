@@ -74,6 +74,33 @@ stale `AuthKey_<id>.p8` and fail with a 401, and `--auth-string` would put
 the key in the process table. Upload is CLI-only, because a tool call that
 blocks for minutes and publishes a build doesn't belong in MCP.
 
+## AppGallery (CLI)
+
+`asc appgallery` covers the Android Publishing API through `crates/appgallery`
+(`publish.rs` app info and listings, `upload.rs` files, `release.rs` submit,
+phased release, release time, GMS flag, packages); the shared operations are
+in `crates/frontend/src/appgallery.rs`. Endpoints sit under
+`https://connect-api.cloud.huawei.com/api/publish/v2/`.
+
+- Auth is a PS256 JWT signed locally from the Service Account file and sent as
+  the bearer token; no token exchange and no `client_id` header (confirmed
+  live 2026-10-27).
+- A 200 reply with a non-zero `ret.code` is an error.
+- `AppInfo` and `LanguageInfo` type the common fields and keep the rest in a
+  flattened `other`, so `listings list` returns everything the API sends.
+- Files: `GET upload-url/for-obs`, `PUT` the bytes to the pre-signed URL (our
+  JWT is not sent there), then `PUT app-file-info`. Binding an image for a
+  language reset that language's text (seen 2026-10-27), so `upload_files`
+  reads the text first and writes it back if it went missing.
+- `PUT app-info` needs `privacyPolicy` on every call.
+- Update limits (name 64, description 8000, brief 80, release notes 500) come
+  from the update reference; the query reference says 60 and 1000 for brief
+  and release notes.
+- MCP is read-only (`appgallery_app_info_get`, `appgallery_package_list`,
+  `appgallery_package_status`); writes, and above all `submit`, stay on the CLI.
+- Not implemented: `app-submit-with-file` and `add-packageurl` (download mode)
+  and the callback they report to; they need a public URL and a server.
+
 ## Git branching workflow
 
 Branches flow in one direction: `main` ← `development` ← feature branch.
@@ -102,7 +129,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace --locked
-cargo check -p smbcloud-ascapi-core --locked   # also -aso, -play, -signing: each lower crate must build alone
+cargo check -p smbcloud-ascapi-core --locked   # also -aso, -play, -msstore, -signing: each lower crate must build alone
 ```
 
 Single test: `cargo test -p smbcloud-ascapi-aso build::tests::<name>`.
@@ -126,6 +153,11 @@ cargo install --path crates/cli --locked
 
 `unrecognized subcommand` on a command that's been merged is the symptom;
 the cure is a rebuild, not a workaround.
+
+The Homebrew build (`brew install ascapi`) can lag too: the formula only
+moves when a tagged release runs `release-homebrew.yml`. Check
+`asc --version` against the latest tag, and use a local build for anything
+merged since.
 
 ## Architecture notes
 
@@ -256,3 +288,40 @@ failed upload keeps the old set. MCP exposes only the reads
 (`play_listing_list`, `play_images_list`, `play_track_get`); every write stays
 CLI-only, like review submission. The operations live in
 `crates/frontend/src/play.rs`.
+
+## Microsoft Store (CLI)
+
+`crates/msstore` is a sibling of `crates/play` and does not depend on `core`.
+Auth is Entra client credentials (`login.microsoftonline.com/{tenant}/oauth2/token`,
+resource `https://manage.devcenter.microsoft.com`), cached until expiry. The
+credentials come from a dotenv file (`--msstore-env` or `MSSTORE_ENV_PATH`) with
+`MSSTORE_TENANT_ID`, `MSSTORE_CLIENT_ID`, `MSSTORE_CLIENT_SECRET`,
+`MSSTORE_SELLER_ID` and `MSSTORE_PRODUCT_ID`, or from the same variables set
+directly. `asc msstore` does not need the App Store Connect key.
+
+The package upload stays with CI. This only edits listing text, and it reuses
+the pending submission (the CI draft that holds the MSIX) instead of replacing
+it; a submission is created only when none is pending. A submission being
+processed or certified is refused. Submissions are `serde_json::Value`, and only
+the `baseListing` keys title, shortDescription, description, releaseNotes,
+features and keywords are replaced, so packages and pricing round-trip. Commit
+to certification is deliberately not implemented: it stays a Partner Center
+click or the CI `commit_submission` input.
+
+```sh
+asc msstore app [--product-id 9P69PH1K7NXX]
+asc msstore submissions status
+asc msstore listings get --locale en-us
+asc --dry-run msstore listings update --locale en-us \
+  --title-file t.txt --short-description-file s.txt --description-file d.txt \
+  --release-notes-file n.txt --features-file f.txt --keywords-file k.txt
+```
+
+`--dry-run` prints the diff and writes nothing; if it had to create a
+submission, it deletes it again. After the PUT the listing is read back and
+compared exactly. Limits linted before sending: title 256, short description
+1000, description 10000, release notes 1500, up to 20 features of 200
+characters, up to 7 search terms of 30 characters and 21 words in total; em
+dashes and curly quotes warn. MCP exposes only the reads (`msstore_app_get`,
+`msstore_submission_status`, `msstore_listing_get`). The operations live in
+`crates/frontend/src/msstore.rs`.

@@ -88,8 +88,8 @@ cargo workspaces version custom 0.3.0 \
 - `--force '*'` bumps every crate to the shared version even if cargo-workspaces
   thinks some are unchanged (single-version workspace).
 
-This creates the `Release X.Y.Z` commit, the `vX.Y.Z` tag, and **9 per-crate
-tags** `smbcloud-ascapi-{aso,cli,core,frontend,mcp,play,pricing,reports,signing}@X.Y.Z`,
+This creates the `Release X.Y.Z` commit, the `vX.Y.Z` tag, and **11 per-crate
+tags** `smbcloud-ascapi-{appgallery,aso,cli,core,frontend,mcp,msstore,play,pricing,reports,signing}@X.Y.Z`,
 all pointing at the Release commit.
 
 ## Step 3 — sync `server.json`
@@ -109,9 +109,11 @@ git add server.json
 git commit --amend --no-edit
 NEW=$(git rev-parse HEAD)
 for t in \
-  smbcloud-ascapi-aso@X.Y.Z smbcloud-ascapi-cli@X.Y.Z \
+  smbcloud-ascapi-appgallery@X.Y.Z smbcloud-ascapi-aso@X.Y.Z \
+  smbcloud-ascapi-cli@X.Y.Z \
   smbcloud-ascapi-core@X.Y.Z smbcloud-ascapi-frontend@X.Y.Z \
-  smbcloud-ascapi-mcp@X.Y.Z smbcloud-ascapi-play@X.Y.Z \
+  smbcloud-ascapi-mcp@X.Y.Z smbcloud-ascapi-msstore@X.Y.Z \
+  smbcloud-ascapi-play@X.Y.Z \
   smbcloud-ascapi-pricing@X.Y.Z \
   smbcloud-ascapi-reports@X.Y.Z smbcloud-ascapi-signing@X.Y.Z \
   vX.Y.Z; do
@@ -124,7 +126,7 @@ changes the hash again. After all amends settle, re-point the tags to the final
 HEAD and verify they all land on one commit:
 
 ```sh
-git tag --points-at HEAD   # must list all 10 tags
+git tag --points-at HEAD   # must list all 12 tags
 git log -1 --format='sig=%G? key=%GK'   # must be sig=G key=2B76DF0F04014E36
 ```
 
@@ -157,9 +159,10 @@ they don't start extra runs. Three jobs run in order:
 1. **`verify`** fails the run if the tag differs from the workspace version in
    `Cargo.toml`, then runs `cargo fmt --check`, clippy with `-D warnings`,
    `cargo test --workspace --locked`, and `cargo check` on `core`, `aso`,
-   `pricing`, `signing`, `reports` and `play` on their own.
+   `pricing`, `signing`, `reports`, `play`, `appgallery` and `msstore` on their own.
 2. **`publish`** (environment `crates-io`) publishes `core`, `aso`, `pricing`,
-   `signing`, `reports`, `play`, `frontend`, `mcp`, `cli`, in that order, with
+   `signing`, `reports`, `play`, `appgallery`, `msstore`, `frontend`, `mcp`, `cli`, in that
+   order, with
    `cargo publish -p <crate> --locked`. Authentication is crates.io trusted
    publishing: the job exchanges its GitHub OIDC token through
    `rust-lang/crates-io-auth-action`, so there is no registry token secret.
@@ -181,7 +184,7 @@ gh run watch <run-id>
 
 ### One-time setup it depends on
 
-- Each of the nine crates has a trusted publisher on crates.io for repository
+- Each of the eleven crates has a trusted publisher on crates.io for repository
   `smbcloudXYZ/smbcloud-ascapi` and workflow `release-crates.yml`. If a crate
   is missing one, `cargo publish` fails for that crate and the later crates are
   not published. Add the publisher and re-run.

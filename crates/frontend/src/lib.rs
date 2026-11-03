@@ -20,6 +20,7 @@
 //!   `profileContent`, and [`profiles::download_profile`] returns the path
 //!   it wrote instead.
 
+pub mod appgallery;
 pub mod attach_build;
 pub mod await_processing;
 pub mod certificates;
@@ -27,6 +28,7 @@ pub mod enums;
 pub mod env;
 #[cfg(target_os = "macos")]
 pub mod keychain;
+pub mod msstore;
 pub mod play;
 pub mod profiles;
 pub mod review;

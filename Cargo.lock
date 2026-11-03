@@ -1756,6 +1756,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891"
 
 [[package]]
+name = "smbcloud-ascapi-appgallery"
+version = "0.5.0"
+dependencies = [
+ "jsonwebtoken",
+ "rand 0.8.8",
+ "reqwest",
+ "rsa",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
 name = "smbcloud-ascapi-aso"
 version = "0.5.0"
 dependencies = [
@@ -1778,10 +1792,12 @@ dependencies = [
  "flate2",
  "serde",
  "serde_json",
+ "smbcloud-ascapi-appgallery",
  "smbcloud-ascapi-aso",
  "smbcloud-ascapi-core",
  "smbcloud-ascapi-frontend",
  "smbcloud-ascapi-mcp",
+ "smbcloud-ascapi-msstore",
  "smbcloud-ascapi-play",
  "smbcloud-ascapi-pricing",
  "smbcloud-ascapi-reports",
@@ -1809,8 +1825,10 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "smbcloud-ascapi-appgallery",
  "smbcloud-ascapi-aso",
  "smbcloud-ascapi-core",
+ "smbcloud-ascapi-msstore",
  "smbcloud-ascapi-play",
  "smbcloud-ascapi-signing",
  "tokio",
@@ -1829,6 +1847,17 @@ dependencies = [
  "smbcloud-ascapi-core",
  "smbcloud-ascapi-frontend",
  "smbcloud-ascapi-signing",
+ "tokio",
+]
+
+[[package]]
+name = "smbcloud-ascapi-msstore"
+version = "0.5.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
  "tokio",
 ]
 
