@@ -15,7 +15,8 @@ use smbcloud_ascapi_aso::app_screenshot_set::{
 };
 use smbcloud_ascapi_aso::app_store_review_detail::{AppStoreReviewDetailWrite, NOTES_MAX_LEN};
 use smbcloud_ascapi_aso::app_store_version::{
-    AppStoreVersionCreateAttributes, AppStoreVersionUpdateFields, Platform,
+    AppStoreVersionCreateAttributes, AppStoreVersionUpdateFields, PhasedReleaseAction, Platform,
+    ReleaseType,
 };
 use smbcloud_ascapi_aso::app_store_version_localization::{
     AppStoreVersionLocalizationAttributes, AppStoreVersionLocalizationCreateAttributes,
@@ -27,7 +28,10 @@ use smbcloud_ascapi_aso::bundle_id::{BundleIdCreateAttributes, BundleIdPlatform}
 use smbcloud_ascapi_aso::prelude::*;
 use smbcloud_ascapi_core::{ApiKey, Client};
 use smbcloud_ascapi_frontend::attach_build::attach_build;
-use smbcloud_ascapi_frontend::await_processing::{await_processing, AwaitConfig};
+use smbcloud_ascapi_frontend::await_processing::{
+    answer_missing_compliance, await_processing, AwaitConfig,
+};
+use smbcloud_ascapi_frontend::release_controls;
 use smbcloud_ascapi_frontend::review;
 use smbcloud_ascapi_frontend::upload::{self, upload_package, validate_app, AltoolAuth, AltoolOp};
 use smbcloud_ascapi_msstore::ListingFields as MsStoreListingFields;
@@ -1847,6 +1851,12 @@ enum AppsCommand {
         /// Give up after this many seconds without a terminal state.
         #[arg(long, default_value_t = 30 * 60)]
         timeout: u64,
+        /// Once the build is VALID, answer export compliance with this value
+        /// if (and only if) the build has no answer yet. `false`: no
+        /// encryption beyond what Apple's OS provides. An answer already on
+        /// the build is left alone. The build is read back after a write.
+        #[arg(long, action = clap::ArgAction::Set)]
+        uses_non_exempt_encryption: Option<bool>,
     },
 }
 
@@ -1899,6 +1909,30 @@ enum AppStoreVersionsCommand {
         version_string: Option<String>,
         #[arg(long)]
         copyright: Option<String>,
+        /// How the approved version goes live: `manual` waits in
+        /// PENDING_DEVELOPER_RELEASE for `app-store-versions release`,
+        /// `after-approval` goes live at once, `scheduled` needs
+        /// `--earliest-release-date`. Read back after the update.
+        #[arg(long, value_enum)]
+        release_type: Option<CliReleaseType>,
+        /// When a scheduled version may go live, ISO 8601 with an offset,
+        /// e.g. 2026-11-10T09:00:00+01:00.
+        #[arg(long)]
+        earliest_release_date: Option<String>,
+    },
+    /// `POST /v1/appStoreVersionReleaseRequests` — release an approved
+    /// version. Refuses unless the version is PENDING_DEVELOPER_RELEASE
+    /// (set `--release-type manual` before submitting), then reads its state
+    /// back.
+    Release { id: String },
+    /// Create, pause, resume or complete a version's phased release
+    /// (`appStoreVersionPhasedReleases`), then read it back. `create` makes
+    /// it INACTIVE; it turns ACTIVE when the version is released. With
+    /// `--dry-run` the current state is read and the body is printed.
+    PhasedRelease {
+        id: String,
+        #[arg(value_enum)]
+        action: CliPhasedReleaseAction,
     },
     /// `DELETE /v1/appStoreVersions/{id}`.
     Delete { id: String },
@@ -2146,6 +2180,42 @@ impl From<CliPlatform> for Platform {
             CliPlatform::MacOs => Platform::MacOs,
             CliPlatform::TvOs => Platform::TvOs,
             CliPlatform::VisionOs => Platform::VisionOs,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliReleaseType {
+    Manual,
+    AfterApproval,
+    Scheduled,
+}
+
+impl From<CliReleaseType> for ReleaseType {
+    fn from(value: CliReleaseType) -> Self {
+        match value {
+            CliReleaseType::Manual => ReleaseType::Manual,
+            CliReleaseType::AfterApproval => ReleaseType::AfterApproval,
+            CliReleaseType::Scheduled => ReleaseType::Scheduled,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliPhasedReleaseAction {
+    Create,
+    Pause,
+    Resume,
+    Complete,
+}
+
+impl From<CliPhasedReleaseAction> for PhasedReleaseAction {
+    fn from(value: CliPhasedReleaseAction) -> Self {
+        match value {
+            CliPhasedReleaseAction::Create => PhasedReleaseAction::Create,
+            CliPhasedReleaseAction::Pause => PhasedReleaseAction::Pause,
+            CliPhasedReleaseAction::Resume => PhasedReleaseAction::Resume,
+            CliPhasedReleaseAction::Complete => PhasedReleaseAction::Complete,
         }
     }
 }
@@ -2804,6 +2874,7 @@ async fn run_apps(
             pre_release_version,
             interval,
             timeout,
+            uses_non_exempt_encryption,
         } => {
             let filter = BuildFilter {
                 version,
@@ -2817,7 +2888,19 @@ async fn run_apps(
             let outcome = await_processing(client, &app_id, &filter, config)
                 .await
                 .map_err(anyhow::Error::msg)?;
-            print_json(&outcome)?;
+            match uses_non_exempt_encryption {
+                Some(answer) if outcome.valid => {
+                    let compliance =
+                        answer_missing_compliance(client, &outcome.build_id, answer, dry_run)
+                            .await
+                            .map_err(anyhow::Error::msg)?;
+                    print_json(&serde_json::json!({
+                        "build": outcome,
+                        "compliance": compliance,
+                    }))?;
+                }
+                _ => print_json(&outcome)?,
+            }
             if outcome.timed_out {
                 anyhow::bail!(
                     "timed out after {}s waiting for processing",
@@ -2977,21 +3060,61 @@ async fn run_app_store_versions(
             id,
             version_string,
             copyright,
+            release_type,
+            earliest_release_date,
         } => {
-            if version_string.is_none() && copyright.is_none() {
-                anyhow::bail!("nothing to update: pass --version-string and/or --copyright");
+            if version_string.is_none()
+                && copyright.is_none()
+                && release_type.is_none()
+                && earliest_release_date.is_none()
+            {
+                anyhow::bail!(
+                    "nothing to update: pass --version-string, --copyright, --release-type and/or --earliest-release-date"
+                );
             }
+            let release_type = release_type.map(ReleaseType::from);
+            release_controls::validate_release_controls(
+                release_type,
+                earliest_release_date.as_deref(),
+            )
+            .map_err(anyhow::Error::msg)?;
             if let Some(version_string) = version_string.as_deref() {
                 validate_version_string(version_string)?;
             }
             let fields = AppStoreVersionUpdateFields {
                 version_string,
                 copyright,
+                release_type,
+                earliest_release_date,
             };
             if dry_run_guard(dry_run, &fields)? {
                 return Ok(());
             }
-            print_json(&client.update_app_store_version(&id, fields).await?)
+            // The version read back after the update, which is what proves
+            // the release type took.
+            print_json(
+                &release_controls::update_release_controls(client, &id, fields)
+                    .await
+                    .map_err(anyhow::Error::msg)?,
+            )
+        }
+        AppStoreVersionsCommand::Release { id } => {
+            let outcome = release_controls::release_version(client, &id, dry_run)
+                .await
+                .map_err(anyhow::Error::msg)?;
+            if outcome.dry_run {
+                println!("# dry run — request body that would be sent:");
+            }
+            print_json(&outcome)
+        }
+        AppStoreVersionsCommand::PhasedRelease { id, action } => {
+            let outcome = release_controls::phased_release(client, &id, action.into(), dry_run)
+                .await
+                .map_err(anyhow::Error::msg)?;
+            if outcome.dry_run {
+                println!("# dry run — request body that would be sent:");
+            }
+            print_json(&outcome)
         }
         AppStoreVersionsCommand::Delete { id } => {
             if dry_run {
