@@ -583,6 +583,40 @@ enum PlayTracksCommand {
         #[arg(long)]
         changes_not_sent_for_review: bool,
     },
+    /// Change the rollout of a version code on a track, in one edit: a
+    /// share of users, everyone, or a stop. A fraction is never lowered, and
+    /// the track is read back after the commit. With `--dry-run` the edit is
+    /// deleted and the planned track is printed.
+    #[command(group(
+        clap::ArgGroup::new("action")
+            .required(true)
+            .multiple(false)
+            .args(["fraction", "complete", "halt"])
+    ))]
+    Rollout {
+        package: String,
+        #[arg(long, default_value = "production")]
+        track: String,
+        #[arg(long)]
+        version_code: String,
+        /// Roll out to this share of users, above 0 and up to 1.0 (1.0
+        /// releases to everyone).
+        #[arg(long)]
+        fraction: Option<f64>,
+        /// Release to everyone.
+        #[arg(long)]
+        complete: bool,
+        /// Halt a staged rollout, keeping the fraction it reached.
+        #[arg(long)]
+        halt: bool,
+        /// Commit with changesNotSentForReview, for apps that have rejected
+        /// changes pending.
+        #[arg(long)]
+        changes_not_sent_for_review: bool,
+    },
+    /// The highest version code on any track, printed as a number. Play
+    /// rejects an upload whose code is not above it.
+    MaxVersionCode { package: String },
 }
 
 #[derive(Subcommand)]
@@ -1300,6 +1334,44 @@ async fn run_play(
                     println!("# dry run: the edit was deleted; target track as it would be:");
                 }
                 print_json(&result)
+            }
+            PlayTracksCommand::Rollout {
+                package,
+                track,
+                version_code,
+                fraction,
+                complete,
+                halt,
+                changes_not_sent_for_review,
+            } => {
+                let action = match (fraction, complete, halt) {
+                    (Some(f), false, false) => smbcloud_ascapi_play::RolloutAction::Fraction(f),
+                    (None, true, false) => smbcloud_ascapi_play::RolloutAction::Complete,
+                    (None, false, true) => smbcloud_ascapi_play::RolloutAction::Halt,
+                    _ => anyhow::bail!("pass exactly one of --fraction, --complete, --halt"),
+                };
+                let result = play::rollout_track(
+                    &client,
+                    &package,
+                    &track,
+                    &version_code,
+                    action,
+                    changes_not_sent_for_review,
+                    dry_run,
+                )
+                .await
+                .map_err(fail)?;
+                if result.dry_run {
+                    println!("# dry run: the edit was deleted; track as it would be:");
+                }
+                print_json(&result)
+            }
+            PlayTracksCommand::MaxVersionCode { package } => {
+                let code = play::max_version_code(&client, &package)
+                    .await
+                    .map_err(fail)?;
+                println!("{code}");
+                Ok(())
             }
         },
     }

@@ -266,6 +266,23 @@ impl PlayClient {
         .await
     }
 
+    /// Every track the app has, with its releases.
+    pub async fn list_tracks(&self, package: &str, edit_id: &str) -> Result<Vec<Track>> {
+        #[derive(serde::Deserialize)]
+        struct Tracks {
+            #[serde(default)]
+            tracks: Vec<Track>,
+        }
+        let list: Tracks = self
+            .json(
+                Method::GET,
+                &edits_path(package, &format!("/{edit_id}/tracks")),
+                None::<&()>,
+            )
+            .await?;
+        Ok(list.tracks)
+    }
+
     pub async fn update_track(&self, package: &str, edit_id: &str, track: &Track) -> Result<Track> {
         self.json(
             Method::PUT,
