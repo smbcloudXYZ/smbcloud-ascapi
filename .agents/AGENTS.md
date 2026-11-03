@@ -154,6 +154,11 @@ cargo install --path crates/cli --locked
 `unrecognized subcommand` on a command that's been merged is the symptom;
 the cure is a rebuild, not a workaround.
 
+The Homebrew build (`brew install ascapi`) can lag too: the formula only
+moves when a tagged release runs `release-homebrew.yml`. Check
+`asc --version` against the latest tag, and use a local build for anything
+merged since.
+
 ## Architecture notes
 
 - Layering is `core` → `aso`/`pricing`/`signing`/`reports` → `frontend` →

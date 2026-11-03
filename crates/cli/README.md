@@ -10,6 +10,8 @@ MCP Registry name: `mcp-name: io.github.smbcloudXYZ/ascapi`
 ## Install
 
 ```bash
+brew tap smbcloudXYZ/tap && brew trust --tap smbcloudXYZ/tap && brew install ascapi
+# or
 cargo install smbcloud-ascapi-cli
 ```
 
