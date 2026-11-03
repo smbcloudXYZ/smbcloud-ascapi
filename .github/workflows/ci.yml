@@ -73,6 +73,8 @@ jobs:
           cargo check --package smbcloud-ascapi-aso --locked
           cargo check --package smbcloud-ascapi-signing --locked
           cargo check --package smbcloud-ascapi-play --locked
+          cargo check --package smbcloud-ascapi-appgallery --locked
+          cargo check --package smbcloud-ascapi-msstore --locked
 
       - name: Build docs
         # Intra-doc links are load-bearing in this crate: the certificate
