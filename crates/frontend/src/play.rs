@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use smbcloud_ascapi_play::{
-    png_dimensions, Image, ImageType, Listing, ListingFields, PlayClient, ServiceAccount, Track,
+    png_dimensions, Image, ImageType, Listing, ListingFields, PlayClient, RolloutAction,
+    ServiceAccount, Track,
 };
 
 /// Resolve the Play client. `path` wins; then `PLAY_SERVICE_ACCOUNT_JSON_PATH`;
@@ -456,6 +457,96 @@ pub async fn promote_track(
         from,
         to: stored,
     })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RolledOut {
+    pub dry_run: bool,
+    /// The release already had the requested status and fraction.
+    pub noop: bool,
+    /// The track as it will be (dry run or no-op) or is (read back after
+    /// commit).
+    pub track: Track,
+}
+
+/// Change the rollout of `version_code` on `track_name` inside one edit: get
+/// the track, plan, update it, validate and commit. A fraction never goes
+/// down. A dry run deletes the edit. After the commit the track is read back
+/// and compared.
+pub async fn rollout_track(
+    client: &PlayClient,
+    package: &str,
+    track_name: &str,
+    version_code: &str,
+    action: RolloutAction,
+    changes_not_sent_for_review: bool,
+    dry_run: bool,
+) -> Result<RolledOut, String> {
+    let plan = in_edit!(
+        client,
+        package,
+        !dry_run,
+        changes_not_sent_for_review,
+        |c, id| {
+            Box::pin(async move {
+                let track = c.get_track(package, id, track_name).await.map_err(err)?;
+                let plan = track.rollout(version_code, action)?;
+                if !dry_run && !plan.noop {
+                    c.update_track(package, id, &plan.target)
+                        .await
+                        .map_err(err)?;
+                }
+                Ok(plan)
+            })
+        }
+    )?;
+    if dry_run || plan.noop {
+        return Ok(RolledOut {
+            dry_run,
+            noop: plan.noop,
+            track: plan.target,
+        });
+    }
+    let stored = read_track(client, package, track_name).await?;
+    let landed = stored
+        .releases
+        .iter()
+        .find(|r| r.version_codes.iter().any(|c| c == version_code))
+        .is_some_and(|r| match action {
+            RolloutAction::Halt => r.status.as_deref() == Some("halted"),
+            RolloutAction::Complete => r.status.as_deref() == Some("completed"),
+            RolloutAction::Fraction(f) if f >= 1.0 => r.status.as_deref() == Some("completed"),
+            RolloutAction::Fraction(f) => {
+                r.status.as_deref() == Some("inProgress")
+                    && r.user_fraction.is_some_and(|got| (got - f).abs() < 1e-9)
+            }
+        });
+    if !landed {
+        return Err(format!(
+            "committed, but {track_name} does not show version code {version_code} at the \
+             requested status and fraction"
+        ));
+    }
+    Ok(RolledOut {
+        dry_run,
+        noop: false,
+        track: stored,
+    })
+}
+
+/// The highest version code on any track of `package`, read in a throwaway
+/// edit. Play refuses an upload whose code is not above it, so this is the
+/// number to stay above.
+pub async fn max_version_code(client: &PlayClient, package: &str) -> Result<u64, String> {
+    let tracks = in_edit!(client, package, false, |c, id| {
+        Box::pin(async move { c.list_tracks(package, id).await.map_err(err) })
+    })?;
+    tracks
+        .iter()
+        .filter_map(Track::max_version_code)
+        .max()
+        .ok_or_else(|| format!("no track of {package} carries a version code"))
 }
 
 #[cfg(test)]

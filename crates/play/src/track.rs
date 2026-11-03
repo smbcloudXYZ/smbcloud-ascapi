@@ -47,6 +47,28 @@ pub struct PromotePlan {
     pub target: Track,
 }
 
+/// What `tracks rollout` does to the release carrying a version code.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RolloutAction {
+    /// Roll out to this share of users, above 0 and up to 1.0. 1.0 completes
+    /// the release.
+    Fraction(f64),
+    /// Release to everyone: `completed`, no fraction.
+    Complete,
+    /// Stop a staged rollout: `halted`, keeping the fraction it reached.
+    Halt,
+}
+
+/// What a rollout change does to a track.
+#[derive(Debug, Clone, Serialize)]
+pub struct RolloutPlan {
+    /// The release already has the requested status and fraction, so there
+    /// is nothing to write.
+    pub noop: bool,
+    /// The track as it will be after the change.
+    pub target: Track,
+}
+
 const FRACTION_EPSILON: f64 = 1e-9;
 
 impl Track {
@@ -137,6 +159,115 @@ impl Track {
                 releases,
             },
         })
+    }
+
+    /// Plan `action` on the release carrying `version_code`. Only that
+    /// release changes; the others (the `completed` one serving users during
+    /// a staged rollout) are carried through. A fraction never goes down:
+    /// that is an error, whether the release is rolling or halted.
+    pub fn rollout(
+        &self,
+        version_code: &str,
+        action: RolloutAction,
+    ) -> std::result::Result<RolloutPlan, String> {
+        let action = match action {
+            RolloutAction::Fraction(f) if !(f > 0.0 && f <= 1.0) => {
+                return Err(format!("user fraction {f} is outside (0, 1]"));
+            }
+            RolloutAction::Fraction(f) if f >= 1.0 => RolloutAction::Complete,
+            other => other,
+        };
+        let index = self
+            .releases
+            .iter()
+            .position(|r| r.version_codes.iter().any(|c| c == version_code))
+            .ok_or_else(|| {
+                format!(
+                    "no release on track {} carries version code {version_code}",
+                    self.track
+                )
+            })?;
+        let held = &self.releases[index];
+        let status = held.status.as_deref().unwrap_or("");
+        let mut release = held.clone();
+        match action {
+            RolloutAction::Fraction(f) => match status {
+                "inProgress" | "halted" => {
+                    let held_fraction = held.user_fraction.unwrap_or(0.0);
+                    if f < held_fraction - FRACTION_EPSILON {
+                        return Err(format!(
+                            "track {} already serves version code {version_code} to {held_fraction}; a rollout cannot be lowered to {f}",
+                            self.track
+                        ));
+                    }
+                    if status == "inProgress" && (f - held_fraction).abs() < FRACTION_EPSILON {
+                        return Ok(self.unchanged());
+                    }
+                    release.status = Some("inProgress".to_string());
+                    release.user_fraction = Some(f);
+                }
+                "completed" => {
+                    return Err(format!(
+                        "version code {version_code} is already released to everyone on track {}; a rollout cannot be lowered to {f}",
+                        self.track
+                    ));
+                }
+                other => {
+                    return Err(format!(
+                        "release {version_code} on track {} is {}; only an inProgress or halted release can change its fraction",
+                        self.track,
+                        if other.is_empty() { "without a status" } else { other }
+                    ));
+                }
+            },
+            RolloutAction::Complete => match status {
+                "completed" => return Ok(self.unchanged()),
+                "inProgress" | "halted" => {
+                    release.status = Some("completed".to_string());
+                    release.user_fraction = None;
+                }
+                other => {
+                    return Err(format!(
+                        "release {version_code} on track {} is {}; only an inProgress or halted release can be completed",
+                        self.track,
+                        if other.is_empty() { "without a status" } else { other }
+                    ));
+                }
+            },
+            RolloutAction::Halt => match status {
+                "halted" => return Ok(self.unchanged()),
+                "inProgress" => release.status = Some("halted".to_string()),
+                other => {
+                    return Err(format!(
+                        "release {version_code} on track {} is {}; only an inProgress release can be halted",
+                        self.track,
+                        if other.is_empty() { "without a status" } else { other }
+                    ));
+                }
+            },
+        }
+        let mut target = self.clone();
+        target.releases[index] = release;
+        Ok(RolloutPlan {
+            noop: false,
+            target,
+        })
+    }
+
+    fn unchanged(&self) -> RolloutPlan {
+        RolloutPlan {
+            noop: true,
+            target: self.clone(),
+        }
+    }
+
+    /// The highest numeric version code on any release of this track.
+    pub fn max_version_code(&self) -> Option<u64> {
+        self.releases
+            .iter()
+            .flat_map(|r| &r.version_codes)
+            .filter_map(|c| c.parse::<u64>().ok())
+            .max()
     }
 
     /// Set `locale`'s release notes on the release carrying `version_code`,
@@ -326,5 +457,118 @@ mod tests {
             value["releases"][1]["countryTargeting"]["includeRestOfWorld"],
             true
         );
+    }
+
+    fn staged(status: &str, fraction: Option<f64>) -> Track {
+        let fraction = fraction
+            .map(|f| format!(r#","userFraction":{f}"#))
+            .unwrap_or_default();
+        production(&format!(
+            r#"{LIVE},{{"name":"1.3.1","versionCodes":["131"],"status":"{status}"{fraction}}}"#
+        ))
+    }
+
+    fn release<'a>(t: &'a Track, code: &str) -> &'a TrackRelease {
+        t.releases
+            .iter()
+            .find(|r| r.version_codes.iter().any(|c| c == code))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_higher_fraction_raises_only_that_release() {
+        let plan = staged("inProgress", Some(0.2))
+            .rollout("131", RolloutAction::Fraction(0.5))
+            .unwrap();
+        assert!(!plan.noop);
+        assert_eq!(release(&plan.target, "131").user_fraction, Some(0.5));
+        assert_eq!(
+            release(&plan.target, "130").status.as_deref(),
+            Some("completed")
+        );
+        let value = serde_json::to_value(&plan.target).unwrap();
+        assert_eq!(value["releases"][0]["inAppUpdatePriority"], 3);
+    }
+
+    #[test]
+    fn the_same_fraction_is_a_noop_and_a_lower_one_an_error() {
+        let t = staged("inProgress", Some(0.5));
+        assert!(t.rollout("131", RolloutAction::Fraction(0.5)).unwrap().noop);
+        assert!(t.rollout("131", RolloutAction::Fraction(0.2)).is_err());
+    }
+
+    #[test]
+    fn a_halted_release_resumes_at_or_above_its_fraction_only() {
+        let t = staged("halted", Some(0.5));
+        let plan = t.rollout("131", RolloutAction::Fraction(0.6)).unwrap();
+        assert_eq!(
+            release(&plan.target, "131").status.as_deref(),
+            Some("inProgress")
+        );
+        assert!(t.rollout("131", RolloutAction::Fraction(0.2)).is_err());
+    }
+
+    #[test]
+    fn a_fraction_of_one_or_complete_releases_to_everyone() {
+        for action in [RolloutAction::Fraction(1.0), RolloutAction::Complete] {
+            let plan = staged("inProgress", Some(0.2))
+                .rollout("131", action)
+                .unwrap();
+            let r = release(&plan.target, "131");
+            assert_eq!(r.status.as_deref(), Some("completed"));
+            assert_eq!(r.user_fraction, None);
+        }
+        assert!(
+            staged("completed", None)
+                .rollout("131", RolloutAction::Complete)
+                .unwrap()
+                .noop
+        );
+    }
+
+    #[test]
+    fn a_completed_release_cannot_be_lowered_to_a_fraction() {
+        assert!(staged("completed", None)
+            .rollout("131", RolloutAction::Fraction(0.5))
+            .is_err());
+    }
+
+    #[test]
+    fn halt_keeps_the_fraction_and_is_idempotent() {
+        let plan = staged("inProgress", Some(0.2))
+            .rollout("131", RolloutAction::Halt)
+            .unwrap();
+        let r = release(&plan.target, "131");
+        assert_eq!(r.status.as_deref(), Some("halted"));
+        assert_eq!(r.user_fraction, Some(0.2));
+        assert!(
+            plan.target
+                .rollout("131", RolloutAction::Halt)
+                .unwrap()
+                .noop
+        );
+        assert!(staged("completed", None)
+            .rollout("131", RolloutAction::Halt)
+            .is_err());
+    }
+
+    #[test]
+    fn a_draft_or_unknown_code_or_bad_fraction_is_an_error() {
+        let t = staged("draft", None);
+        assert!(t.rollout("131", RolloutAction::Complete).is_err());
+        assert!(t.rollout("999", RolloutAction::Halt).is_err());
+        let t = staged("inProgress", Some(0.2));
+        assert!(t.rollout("131", RolloutAction::Fraction(0.0)).is_err());
+        assert!(t.rollout("131", RolloutAction::Fraction(1.5)).is_err());
+    }
+
+    #[test]
+    fn max_version_code_compares_numbers_not_strings() {
+        let t = production(
+            r#"{"versionCodes":["99","2026110222"],"status":"completed"},
+               {"versionCodes":["2026102520","x"],"status":"completed"}"#,
+        );
+        assert_eq!(t.max_version_code(), Some(2026110222));
+        assert_eq!(production("").max_version_code(), None);
     }
 }
