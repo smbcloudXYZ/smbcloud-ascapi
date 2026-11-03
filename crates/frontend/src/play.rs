@@ -514,7 +514,21 @@ pub async fn rollout_track(
         .iter()
         .find(|r| r.version_codes.iter().any(|c| c == version_code))
         .is_some_and(|r| match action {
-            RolloutAction::Halt => r.status.as_deref() == Some("halted"),
+            // A halt keeps the fraction the rollout reached, and a later resume
+            // is checked against it, so a halt that dropped it did not land.
+            RolloutAction::Halt => {
+                let planned = plan
+                    .target
+                    .releases
+                    .iter()
+                    .find(|p| p.version_codes.iter().any(|c| c == version_code))
+                    .and_then(|p| p.user_fraction);
+                r.status.as_deref() == Some("halted")
+                    && match (planned, r.user_fraction) {
+                        (Some(want), Some(got)) => (want - got).abs() < 1e-9,
+                        (want, got) => want.is_none() && got.is_none(),
+                    }
+            }
             RolloutAction::Complete => r.status.as_deref() == Some("completed"),
             RolloutAction::Fraction(f) if f >= 1.0 => r.status.as_deref() == Some("completed"),
             RolloutAction::Fraction(f) => {
