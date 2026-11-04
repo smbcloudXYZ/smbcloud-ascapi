@@ -121,12 +121,25 @@ fn chunk_for(op: &UploadOperation, bytes: &[u8]) -> Result<Vec<u8>> {
     })
 }
 
+/// Refuse an upload plan that cannot deliver `bytes`: a non-empty file with
+/// no operations at all would commit nothing under the full-file checksum.
+fn check_plan(operations: &[UploadOperation], bytes: &[u8]) -> Result<()> {
+    if !bytes.is_empty() && operations.is_empty() {
+        return Err(Error::UploadPlan(format!(
+            "the reserve response carried no upload operations for a {}-byte file",
+            bytes.len()
+        )));
+    }
+    Ok(())
+}
+
 /// PUT each slice of `bytes` that Apple's upload operations ask for.
 pub(crate) async fn upload_operations(
     client: &Client,
     operations: &[UploadOperation],
     bytes: &[u8],
 ) -> Result<()> {
+    check_plan(operations, bytes)?;
     for op in operations {
         let chunk = chunk_for(op, bytes)?;
         let headers: Vec<(String, String)> = op
@@ -268,5 +281,12 @@ mod tests {
             Err(Error::UploadPlan(_))
         ));
         assert!(chunk_for(&op(u64::MAX, 10), b"abc").is_err());
+    }
+
+    #[test]
+    fn no_operations_for_a_non_empty_file_is_an_error() {
+        assert!(matches!(check_plan(&[], b"abc"), Err(Error::UploadPlan(_))));
+        assert!(check_plan(&[], b"").is_ok());
+        assert!(check_plan(&[op(0, 3)], b"abc").is_ok());
     }
 }

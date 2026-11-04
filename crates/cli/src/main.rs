@@ -4023,6 +4023,12 @@ async fn run_in_app_purchases(
                 .context("the screenshot path has no file name")?
                 .to_string();
             let existing = client.get_review_screenshot(&id).await?;
+            if let (Some(old), false) = (&existing, replace) {
+                anyhow::bail!(
+                    "{id} already has a review screenshot ({}); pass --replace",
+                    old.id
+                );
+            }
             if dry_run {
                 println!(
                     "# dry run: would {}upload {file_name} ({} bytes) as the review screenshot of {id}",
@@ -4032,12 +4038,6 @@ async fn run_in_app_purchases(
                 return Ok(());
             }
             if let Some(old) = existing {
-                if !replace {
-                    anyhow::bail!(
-                        "{id} already has a review screenshot ({}); pass --replace",
-                        old.id
-                    );
-                }
                 client.delete_review_screenshot(&old.id).await?;
             }
             let uploaded = client
@@ -4065,6 +4065,12 @@ async fn run_in_app_purchases(
                 .context("the image path has no file name")?
                 .to_string();
             let existing = client.list_promotional_images(&id).await?;
+            if !existing.is_empty() && !replace {
+                anyhow::bail!(
+                    "{id} already has {} promotional image(s); pass --replace",
+                    existing.len()
+                );
+            }
             if dry_run {
                 println!(
                     "# dry run: would {}upload {file_name} ({} bytes) as a promotional image of {id}",
@@ -4072,12 +4078,6 @@ async fn run_in_app_purchases(
                     bytes.len()
                 );
                 return Ok(());
-            }
-            if !existing.is_empty() && !replace {
-                anyhow::bail!(
-                    "{id} already has {} promotional image(s); pass --replace",
-                    existing.len()
-                );
             }
             for old in &existing {
                 client.delete_promotional_image(&old.id).await?;
