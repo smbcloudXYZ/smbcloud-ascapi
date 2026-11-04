@@ -8,6 +8,7 @@ members = [
     "crates/msstore",
     "crates/signing",
     "crates/pricing",
+    "crates/iap",
     "crates/reports",
     "crates/frontend",
     "crates/mcp",
@@ -29,6 +30,7 @@ smbcloud-ascapi-appgallery = { version = "0.3.0", path = "crates/appgallery" }
 smbcloud-ascapi-msstore = { version = "0.3.0", path = "crates/msstore" }
 smbcloud-ascapi-signing = { version = "0.3.0", path = "crates/signing" }
 smbcloud-ascapi-pricing = { version = "0.3.0", path = "crates/pricing" }
+smbcloud-ascapi-iap = { version = "0.3.0", path = "crates/iap" }
 smbcloud-ascapi-reports = { version = "0.3.0", path = "crates/reports" }
 smbcloud-ascapi-frontend = { version = "0.3.0", path = "crates/frontend" }
 smbcloud-ascapi-mcp = { version = "0.3.0", path = "crates/mcp" }

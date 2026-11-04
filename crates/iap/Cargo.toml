@@ -1,0 +1,20 @@
+[package]
+name = "smbcloud-ascapi-iap"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "App Store Connect in-app purchases: the product, its localizations, price schedule, territory availability and App Review screenshot."
+readme = "README.md"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+async-trait = { workspace = true }
+md5 = "0.7"
+reqwest = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+smbcloud-ascapi-core = { workspace = true }

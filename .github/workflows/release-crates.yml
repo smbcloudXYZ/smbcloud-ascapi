@@ -92,7 +92,7 @@ jobs:
       - name: Check the lower crates build alone
         shell: bash
         run: |
-          for crate in core aso pricing signing reports play appgallery msstore; do
+          for crate in core aso pricing iap signing reports play appgallery msstore; do
             cargo check -p "smbcloud-ascapi-${crate}" --locked
           done
 
@@ -142,6 +142,7 @@ jobs:
             core
             aso
             pricing
+            iap
             signing
             reports
             play

@@ -17,7 +17,7 @@ for the full crate table.
 
 ## Workspace layout
 
-Domain crates (`aso`, `pricing`, `signing`, `reports`) know nothing about each
+Domain crates (`aso`, `pricing`, `iap`, `signing`, `reports`) know nothing about each
 other or the front ends. Each extends `smbcloud_ascapi_core::Client` with an
 **extension trait** (Rust only allows inherent impls in the crate that owns the
 type). Import a domain's `prelude::*` to pull its traits in at once.
@@ -73,6 +73,42 @@ field to its ASC filter key. The upload lives in
 stale `AuthKey_<id>.p8` and fail with a 401, and `--auth-string` would put
 the key in the process table. Upload is CLI-only, because a tool call that
 blocks for minutes and publishes a build doesn't belong in MCP.
+
+## In-app purchases (CLI)
+
+One-time products (the v2 `inAppPurchases` resource) through `crates/iap`.
+Subscriptions are not covered. A product is ready to submit once it has a
+localization, a price, territories and a review screenshot:
+
+```sh
+asc in-app-purchases list <APP_ID>
+asc in-app-purchases get <IAP_ID>        # product, localizations, manual price, territories, screenshot
+asc in-app-purchases create <APP_ID> --product-id onde.unlock --name Onde --type non-consumable \
+  [--family-sharable] [--review-note-file note.txt]
+asc in-app-purchases update <IAP_ID> [--name …] [--review-note-file …]
+asc in-app-purchases localize <IAP_ID> --locale en-US --name "Unlock Onde" --description "Unlimited answers, paid once"
+asc in-app-purchases price-points <IAP_ID> [--territory USA]
+asc in-app-purchases set-price <IAP_ID> --price 4.99 [--territory USA]
+asc in-app-purchases set-availability <IAP_ID> (--all-territories | --territory SWE …) [--no-new-territories]
+asc in-app-purchases review-screenshot <IAP_ID> paywall.png [--replace]
+asc in-app-purchases promotional-image <IAP_ID> unlock.png [--replace]   # optional 1024x1024 store image
+```
+
+- Every write honours the global `--dry-run` and reads the result back,
+  exiting nonzero when it does not match.
+- The product id is permanent: Apple never lets this account reuse it, even
+  after deletion. `create` refuses an id the app already has.
+- Family Sharing can be turned on later but never off, so `create` leaves it
+  off unless `--family-sharable` is given, and `update` cannot change it.
+- `set-price` matches the customer price string exactly ("4.99") against the
+  territory's price points and posts a schedule with that one manual price;
+  Apple derives the other storefronts. The inline price uses the local id
+  `${price1}`, as Apple documents.
+- There is no submit command. An app's first in-app purchase is reviewed with
+  an app version and is attached on the version page in App Store Connect.
+- A freshly created product can answer one read with a 401 for a few seconds.
+  Rerunning the same command is safe: every write is idempotent.
+- No MCP tools yet, like `pricing`.
 
 ## AppGallery (CLI)
 
@@ -161,7 +197,7 @@ merged since.
 
 ## Architecture notes
 
-- Layering is `core` → `aso`/`pricing`/`signing`/`reports` → `frontend` →
+- Layering is `core` → `aso`/`pricing`/`iap`/`signing`/`reports` → `frontend` →
   `mcp` / `cli`. Don't add a dependency that points up or sideways; CI checks
   the lower crates build alone.
 - The MCP tool set is declared by the `ascapi_mcp_tools!` macro
