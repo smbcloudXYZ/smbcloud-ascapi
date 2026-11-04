@@ -12,7 +12,7 @@ use smbcloud_ascapi_core::jsonapi::{
     CreateBody, CreateData, Document, OptionalDocument, Resource, ResourceId, ToOne, UpdateBody,
     UpdateData,
 };
-use smbcloud_ascapi_core::{Client, Result};
+use smbcloud_ascapi_core::{Client, Error, Result};
 
 pub const RESOURCE_TYPE: &str = "inAppPurchaseAppStoreReviewScreenshots";
 
@@ -107,6 +107,41 @@ pub fn create_body(
     }
 }
 
+/// The slice of `bytes` an upload operation asks for. One that reaches past
+/// the end of the file is an error: sending a short or empty chunk would
+/// commit a corrupt asset under the full-file checksum.
+fn chunk_for(op: &UploadOperation, bytes: &[u8]) -> Result<Vec<u8>> {
+    let start = op.offset as usize;
+    let end = start.saturating_add(op.length as usize);
+    bytes.get(start..end).map(<[u8]>::to_vec).ok_or_else(|| {
+        Error::UploadPlan(format!(
+            "an upload operation covers bytes {start}..{end}, but the file has {}",
+            bytes.len()
+        ))
+    })
+}
+
+/// PUT each slice of `bytes` that Apple's upload operations ask for.
+pub(crate) async fn upload_operations(
+    client: &Client,
+    operations: &[UploadOperation],
+    bytes: &[u8],
+) -> Result<()> {
+    for op in operations {
+        let chunk = chunk_for(op, bytes)?;
+        let headers: Vec<(String, String)> = op
+            .request_headers
+            .iter()
+            .map(|h| (h.name.clone(), h.value.clone()))
+            .collect();
+        let method: Method = op.method.parse().unwrap_or(Method::PUT);
+        client
+            .upload_bytes(method, &op.url, &headers, chunk)
+            .await?;
+    }
+    Ok(())
+}
+
 #[async_trait]
 pub trait InAppPurchaseReviewScreenshotApi {
     /// `GET /v2/inAppPurchases/{id}/appStoreReviewScreenshot`.
@@ -164,21 +199,7 @@ impl InAppPurchaseReviewScreenshotApi for Client {
             .await?;
         let reserved = reserved.data;
 
-        for op in &reserved.attributes.upload_operations {
-            let start = op.offset as usize;
-            let end = start + op.length as usize;
-            let chunk = bytes
-                .get(start..end)
-                .map(<[u8]>::to_vec)
-                .unwrap_or_default();
-            let headers: Vec<(String, String)> = op
-                .request_headers
-                .iter()
-                .map(|h| (h.name.clone(), h.value.clone()))
-                .collect();
-            let method: Method = op.method.parse().unwrap_or(Method::PUT);
-            self.upload_bytes(method, &op.url, &headers, chunk).await?;
-        }
+        upload_operations(self, &reserved.attributes.upload_operations, &bytes).await?;
 
         let path = format!("/v1/inAppPurchaseAppStoreReviewScreenshots/{}", reserved.id);
         let commit = UpdateBody {
@@ -223,5 +244,29 @@ mod tests {
         }))
         .unwrap();
         assert!(doc.data.attributes.upload_operations.is_empty());
+    }
+
+    fn op(offset: u64, length: u64) -> UploadOperation {
+        UploadOperation {
+            method: "PUT".into(),
+            url: "https://example.invalid".into(),
+            length,
+            offset,
+            request_headers: vec![],
+        }
+    }
+
+    #[test]
+    fn a_chunk_inside_the_file_is_cut_out() {
+        assert_eq!(chunk_for(&op(2, 3), b"abcdefg").unwrap(), b"cde");
+    }
+
+    #[test]
+    fn a_chunk_past_the_end_of_the_file_is_an_error() {
+        assert!(matches!(
+            chunk_for(&op(5, 10), b"abcdefg"),
+            Err(Error::UploadPlan(_))
+        ));
+        assert!(chunk_for(&op(u64::MAX, 10), b"abc").is_err());
     }
 }

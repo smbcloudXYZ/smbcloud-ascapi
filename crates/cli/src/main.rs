@@ -3913,6 +3913,7 @@ async fn run_in_app_purchases(
             print_json(&back)
         }
         InAppPurchasesCommand::PricePoints { id, territory } => {
+            let territory = territory.to_uppercase();
             let points = client.list_price_points(&id, &territory).await?;
             let rows: Vec<_> = points
                 .iter()
@@ -3931,6 +3932,7 @@ async fn run_in_app_purchases(
             territory,
             price: amount,
         } => {
+            let territory = territory.to_uppercase();
             let Some(point) = client.find_price_point(&id, &territory, &amount).await? else {
                 anyhow::bail!(
                     "{amount} is not one of Apple's price points in {territory}; \
@@ -3985,6 +3987,13 @@ async fn run_in_app_purchases(
                 .get_in_app_purchase_availability(&id)
                 .await?
                 .context("availability was posted but reads back as unset")?;
+            if back.available_in_new_territories != Some(!no_new_territories) {
+                anyhow::bail!(
+                    "availability reads back with availableInNewTerritories = {:?}, {} was sent",
+                    back.available_in_new_territories,
+                    !no_new_territories
+                );
+            }
             if back.territories != codes {
                 anyhow::bail!(
                     "availability reads back with {} territories, {} were sent",

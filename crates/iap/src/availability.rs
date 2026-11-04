@@ -113,7 +113,9 @@ impl InAppPurchaseAvailabilityApi for Client {
                 Some(&body),
             )
             .await?;
-        Ok(doc.data.map(|d| d.id).unwrap_or_default())
+        doc.data
+            .map(|d| d.id)
+            .ok_or(smbcloud_ascapi_core::Error::MissingData("availability"))
     }
 
     async fn get_in_app_purchase_availability(
