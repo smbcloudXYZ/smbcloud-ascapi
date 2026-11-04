@@ -1796,6 +1796,7 @@ dependencies = [
  "smbcloud-ascapi-aso",
  "smbcloud-ascapi-core",
  "smbcloud-ascapi-frontend",
+ "smbcloud-ascapi-iap",
  "smbcloud-ascapi-mcp",
  "smbcloud-ascapi-msstore",
  "smbcloud-ascapi-play",
@@ -1832,6 +1833,18 @@ dependencies = [
  "smbcloud-ascapi-play",
  "smbcloud-ascapi-signing",
  "tokio",
+]
+
+[[package]]
+name = "smbcloud-ascapi-iap"
+version = "0.3.0"
+dependencies = [
+ "async-trait",
+ "md5",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "smbcloud-ascapi-core",
 ]
 
 [[package]]

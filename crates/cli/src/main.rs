@@ -34,6 +34,11 @@ use smbcloud_ascapi_frontend::await_processing::{
 use smbcloud_ascapi_frontend::release_controls;
 use smbcloud_ascapi_frontend::review;
 use smbcloud_ascapi_frontend::upload::{self, upload_package, validate_app, AltoolAuth, AltoolOp};
+use smbcloud_ascapi_iap::in_app_purchase::{
+    InAppPurchaseCreateAttributes, InAppPurchaseType, InAppPurchaseUpdateAttributes,
+};
+use smbcloud_ascapi_iap::localization::LocalizationUpdate;
+use smbcloud_ascapi_iap::prelude::*;
 use smbcloud_ascapi_msstore::ListingFields as MsStoreListingFields;
 use smbcloud_ascapi_play::{ImageType as PlayImageType, ListingFields as PlayListingFields};
 use smbcloud_ascapi_pricing::app_price::PriceKind;
@@ -814,6 +819,13 @@ enum Command {
     AppPrices {
         #[command(subcommand)]
         command: AppPricesCommand,
+    },
+    /// In-app purchases (one-time products, not subscriptions): create
+    /// one, localize it, price it, choose its territories and upload the
+    /// App Review screenshot.
+    InAppPurchases {
+        #[command(subcommand)]
+        command: InAppPurchasesCommand,
     },
     /// Signing certificates: list what the team holds, issue a new one, or
     /// revoke an old one.
@@ -1830,6 +1842,119 @@ enum AppPricesCommand {
     },
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum CliInAppPurchaseType {
+    Consumable,
+    NonConsumable,
+    NonRenewingSubscription,
+}
+
+impl From<CliInAppPurchaseType> for InAppPurchaseType {
+    fn from(value: CliInAppPurchaseType) -> Self {
+        match value {
+            CliInAppPurchaseType::Consumable => InAppPurchaseType::Consumable,
+            CliInAppPurchaseType::NonConsumable => InAppPurchaseType::NonConsumable,
+            CliInAppPurchaseType::NonRenewingSubscription => {
+                InAppPurchaseType::NonRenewingSubscription
+            }
+        }
+    }
+}
+
+#[derive(Subcommand)]
+enum InAppPurchasesCommand {
+    /// Every in-app purchase of an app, with its state.
+    List { app_id: String },
+    /// One product with everything that decides whether it can be
+    /// submitted: localizations, manual price, territories, screenshot.
+    Get { id: String },
+    /// Create a product. The product id is permanent and can never be
+    /// reused by this account, even after the product is deleted.
+    Create {
+        app_id: String,
+        /// The id the app asks the store for, e.g. `onde.unlock`.
+        #[arg(long)]
+        product_id: String,
+        /// Reference name, seen only in App Store Connect (max 64).
+        #[arg(long)]
+        name: String,
+        #[arg(long, value_enum)]
+        r#type: CliInAppPurchaseType,
+        /// Let Family Sharing members use the purchase. Can only be
+        /// turned on later, never off, so it is off unless given.
+        #[arg(long)]
+        family_sharable: bool,
+        #[arg(long, conflicts_with = "review_note_file")]
+        review_note: Option<String>,
+        #[arg(long)]
+        review_note_file: Option<PathBuf>,
+    },
+    /// Change the reference name or the review note.
+    Update {
+        id: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, conflicts_with = "review_note_file")]
+        review_note: Option<String>,
+        #[arg(long)]
+        review_note_file: Option<PathBuf>,
+    },
+    /// Set the display name and description for one locale, creating the
+    /// localization or updating the one that exists.
+    Localize {
+        id: String,
+        /// e.g. `en-US`.
+        #[arg(long)]
+        locale: String,
+        /// Display name on the purchase sheet (max 30).
+        #[arg(long)]
+        name: String,
+        /// Description on the purchase sheet (max 45).
+        #[arg(long)]
+        description: Option<String>,
+    },
+    /// The price points Apple offers in a territory.
+    PricePoints {
+        id: String,
+        #[arg(long, default_value = "USA")]
+        territory: String,
+    },
+    /// Set one manual price in a base territory; Apple derives the rest.
+    SetPrice {
+        id: String,
+        #[arg(long, default_value = "USA")]
+        territory: String,
+        /// The customer price exactly as Apple writes it, e.g. `4.99`.
+        #[arg(long)]
+        price: String,
+    },
+    /// Choose the storefronts the product is sold in. Replaces the set.
+    SetAvailability {
+        id: String,
+        /// Every storefront App Store Connect lists.
+        #[arg(
+            long,
+            conflicts_with = "territory",
+            required_unless_present = "territory"
+        )]
+        all_territories: bool,
+        /// One storefront code; repeat for more.
+        #[arg(long)]
+        territory: Vec<String>,
+        /// Don't add storefronts Apple opens later.
+        #[arg(long)]
+        no_new_territories: bool,
+    },
+    /// Upload the screenshot App Review asks for (the purchase as it
+    /// appears in the app). Replaces an existing one only with --replace.
+    ReviewScreenshot {
+        id: String,
+        path: PathBuf,
+        #[arg(long)]
+        replace: bool,
+    },
+}
+
 #[derive(Subcommand)]
 enum AppsCommand {
     /// `GET /v1/apps`.
@@ -2645,6 +2770,9 @@ async fn main() -> Result<()> {
             run_app_screenshots(&client, command, cli.dry_run).await
         }
         Command::AppPrices { command } => run_app_prices(&client, command).await,
+        Command::InAppPurchases { command } => {
+            run_in_app_purchases(&client, command, cli.dry_run).await
+        }
         Command::Certificates { command } => run_certificates(&client, command, cli.dry_run).await,
         Command::Profiles { command } => run_profiles(&client, command, cli.dry_run).await,
         Command::ReviewSubmissions { command } => {
@@ -3604,6 +3732,309 @@ async fn run_app_prices(client: &Client, command: AppPricesCommand) -> Result<()
                 .list_app_prices(&app_id, kind, territory.as_deref())
                 .await?;
             print_json(&prices)
+        }
+    }
+}
+
+fn check_len(field: &str, value: &str, max: usize) -> Result<()> {
+    let len = value.chars().count();
+    if len > max {
+        anyhow::bail!("{field} is {len} characters; App Store Connect allows {max}");
+    }
+    Ok(())
+}
+
+async fn run_in_app_purchases(
+    client: &Client,
+    command: InAppPurchasesCommand,
+    dry_run: bool,
+) -> Result<()> {
+    use smbcloud_ascapi_iap::{availability, in_app_purchase, localization, price};
+    match command {
+        InAppPurchasesCommand::List { app_id } => {
+            print_json(&client.list_in_app_purchases(&app_id).await?)
+        }
+        InAppPurchasesCommand::Get { id } => {
+            let product = client.get_in_app_purchase(&id).await?;
+            let localizations = client.list_in_app_purchase_localizations(&id).await?;
+            let manual_prices = client.list_manual_prices(&id).await?;
+            let availability = client.get_in_app_purchase_availability(&id).await?;
+            let screenshot = client.get_review_screenshot(&id).await?;
+            print_json(&serde_json::json!({
+                "product": product,
+                "localizations": localizations,
+                "manualPrices": manual_prices,
+                "availability": availability,
+                "reviewScreenshot": screenshot,
+            }))
+        }
+        InAppPurchasesCommand::Create {
+            app_id,
+            product_id,
+            name,
+            r#type,
+            family_sharable,
+            review_note,
+            review_note_file,
+        } => {
+            check_len("--name", &name, in_app_purchase::NAME_MAX_LEN)?;
+            let review_note = text_arg(review_note, review_note_file, "--review-note-file")?;
+            if let Some(note) = &review_note {
+                check_len("--review-note", note, in_app_purchase::REVIEW_NOTE_MAX_LEN)?;
+            }
+            let existing = client.list_in_app_purchases(&app_id).await?;
+            if let Some(found) = existing
+                .iter()
+                .find(|p| p.attributes.product_id.as_deref() == Some(product_id.as_str()))
+            {
+                anyhow::bail!(
+                    "{product_id} already exists on this app (id {}); use `update`",
+                    found.id
+                );
+            }
+            let attributes = InAppPurchaseCreateAttributes {
+                name,
+                product_id,
+                in_app_purchase_type: r#type.into(),
+                review_note,
+                family_sharable: Some(family_sharable),
+            };
+            let body = in_app_purchase::create_body(&app_id, attributes.clone());
+            if dry_run_guard(dry_run, &body)? {
+                return Ok(());
+            }
+            let created = client
+                .create_in_app_purchase(&app_id, attributes.clone())
+                .await?;
+            let back = client.get_in_app_purchase(&created.id).await?;
+            if back.attributes.product_id.as_deref() != Some(attributes.product_id.as_str()) {
+                anyhow::bail!(
+                    "created {} but reading it back shows a different product id",
+                    created.id
+                );
+            }
+            print_json(&back)
+        }
+        InAppPurchasesCommand::Update {
+            id,
+            name,
+            review_note,
+            review_note_file,
+        } => {
+            let review_note = text_arg(review_note, review_note_file, "--review-note-file")?;
+            if let Some(name) = &name {
+                check_len("--name", name, in_app_purchase::NAME_MAX_LEN)?;
+            }
+            if let Some(note) = &review_note {
+                check_len("--review-note", note, in_app_purchase::REVIEW_NOTE_MAX_LEN)?;
+            }
+            if name.is_none() && review_note.is_none() {
+                anyhow::bail!("nothing to change: pass --name or --review-note");
+            }
+            let update = InAppPurchaseUpdateAttributes {
+                name,
+                review_note,
+                family_sharable: None,
+            };
+            let body = in_app_purchase::update_body(&id, update.clone());
+            if dry_run_guard(dry_run, &body)? {
+                return Ok(());
+            }
+            client.update_in_app_purchase(&id, update.clone()).await?;
+            let back = client.get_in_app_purchase(&id).await?;
+            if update.name.is_some() && back.attributes.name != update.name
+                || update.review_note.is_some() && back.attributes.review_note != update.review_note
+            {
+                anyhow::bail!("updated {id} but reading it back does not match what was sent");
+            }
+            print_json(&back)
+        }
+        InAppPurchasesCommand::Localize {
+            id,
+            locale,
+            name,
+            description,
+        } => {
+            check_len("--name", &name, localization::NAME_MAX_LEN)?;
+            if let Some(d) = &description {
+                check_len("--description", d, localization::DESCRIPTION_MAX_LEN)?;
+            }
+            let existing = client
+                .list_in_app_purchase_localizations(&id)
+                .await?
+                .into_iter()
+                .find(|l| l.attributes.locale.as_deref() == Some(locale.as_str()));
+            let written = match existing {
+                Some(found) => {
+                    let update = LocalizationUpdate {
+                        name: Some(name.clone()),
+                        description: description.clone(),
+                    };
+                    if dry_run_guard(
+                        dry_run,
+                        &localization::update_body(&found.id, update.clone()),
+                    )? {
+                        return Ok(());
+                    }
+                    client
+                        .update_in_app_purchase_localization(&found.id, update)
+                        .await?
+                }
+                None => {
+                    let body =
+                        localization::create_body(&id, &locale, &name, description.as_deref());
+                    if dry_run_guard(dry_run, &body)? {
+                        return Ok(());
+                    }
+                    client
+                        .create_in_app_purchase_localization(
+                            &id,
+                            &locale,
+                            &name,
+                            description.as_deref(),
+                        )
+                        .await?
+                }
+            };
+            let back = client
+                .list_in_app_purchase_localizations(&id)
+                .await?
+                .into_iter()
+                .find(|l| l.id == written.id)
+                .context("the localization was written but is missing when read back")?;
+            if back.attributes.name.as_deref() != Some(name.as_str())
+                || description.is_some() && back.attributes.description != description
+            {
+                anyhow::bail!(
+                    "localization {} reads back differently from what was sent",
+                    back.id
+                );
+            }
+            print_json(&back)
+        }
+        InAppPurchasesCommand::PricePoints { id, territory } => {
+            let points = client.list_price_points(&id, &territory).await?;
+            let rows: Vec<_> = points
+                .iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "id": p.id,
+                        "customerPrice": p.attributes.customer_price,
+                        "proceeds": p.attributes.proceeds,
+                    })
+                })
+                .collect();
+            print_json(&rows)
+        }
+        InAppPurchasesCommand::SetPrice {
+            id,
+            territory,
+            price: amount,
+        } => {
+            let Some(point) = client.find_price_point(&id, &territory, &amount).await? else {
+                anyhow::bail!(
+                    "{amount} is not one of Apple's price points in {territory}; \
+                     `asc in-app-purchases price-points {id} --territory {territory}` lists them"
+                );
+            };
+            let body = price::schedule_body(&id, &territory, &point.id);
+            if dry_run_guard(dry_run, &body)? {
+                return Ok(());
+            }
+            client
+                .set_price_schedule(&id, &territory, &point.id)
+                .await?;
+            let prices = client.list_manual_prices(&id).await?;
+            let matches = prices.iter().any(|p| {
+                p.territory.as_deref() == Some(territory.as_str())
+                    && p.customer_price.as_deref() == Some(amount.as_str())
+            });
+            if !matches {
+                anyhow::bail!(
+                    "the price schedule was posted but reads back without {amount} in {territory}"
+                );
+            }
+            print_json(&prices)
+        }
+        InAppPurchasesCommand::SetAvailability {
+            id,
+            all_territories,
+            territory,
+            no_new_territories,
+        } => {
+            let mut codes: Vec<String> = if all_territories {
+                client
+                    .list_territories()
+                    .await?
+                    .into_iter()
+                    .map(|t| t.id)
+                    .collect()
+            } else {
+                territory.iter().map(|t| t.to_uppercase()).collect()
+            };
+            codes.sort();
+            codes.dedup();
+            let body = availability::availability_body(&id, &codes, !no_new_territories);
+            if dry_run_guard(dry_run, &body)? {
+                return Ok(());
+            }
+            client
+                .set_in_app_purchase_availability(&id, &codes, !no_new_territories)
+                .await?;
+            let back = client
+                .get_in_app_purchase_availability(&id)
+                .await?
+                .context("availability was posted but reads back as unset")?;
+            if back.territories != codes {
+                anyhow::bail!(
+                    "availability reads back with {} territories, {} were sent",
+                    back.territories.len(),
+                    codes.len()
+                );
+            }
+            print_json(&back)
+        }
+        InAppPurchasesCommand::ReviewScreenshot { id, path, replace } => {
+            let bytes =
+                std::fs::read(&path).with_context(|| format!("cannot read {}", path.display()))?;
+            let file_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .context("the screenshot path has no file name")?
+                .to_string();
+            let existing = client.get_review_screenshot(&id).await?;
+            if dry_run {
+                println!(
+                    "# dry run: would {}upload {file_name} ({} bytes) as the review screenshot of {id}",
+                    if existing.is_some() { "delete the current screenshot and " } else { "" },
+                    bytes.len()
+                );
+                return Ok(());
+            }
+            if let Some(old) = existing {
+                if !replace {
+                    anyhow::bail!(
+                        "{id} already has a review screenshot ({}); pass --replace",
+                        old.id
+                    );
+                }
+                client.delete_review_screenshot(&old.id).await?;
+            }
+            let uploaded = client
+                .upload_review_screenshot(&id, file_name, bytes)
+                .await?;
+            let back = client
+                .get_review_screenshot(&id)
+                .await?
+                .context("the screenshot was committed but reads back as missing")?;
+            if back.id != uploaded.id {
+                anyhow::bail!(
+                    "a different screenshot reads back ({}) than the one uploaded ({})",
+                    back.id,
+                    uploaded.id
+                );
+            }
+            print_json(&back)
         }
     }
 }
