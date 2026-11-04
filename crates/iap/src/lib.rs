@@ -14,6 +14,9 @@
 //! 4. territory availability ([`availability`]);
 //! 5. an App Review screenshot ([`review_screenshot`]).
 //!
+//! A promotional image ([`promotional_image`]) is optional: it only feeds
+//! the App Store product page.
+//!
 //! With those in place the product reaches `READY_TO_SUBMIT`. An app's
 //! first in-app purchase is reviewed together with an app version, which is
 //! done on the version page, so this crate has no submit call.
@@ -25,6 +28,7 @@ pub mod availability;
 pub mod in_app_purchase;
 pub mod localization;
 pub mod price;
+pub mod promotional_image;
 pub mod review_screenshot;
 
 /// Every extension trait in this crate, for one glob import.
@@ -33,5 +37,6 @@ pub mod prelude {
     pub use crate::in_app_purchase::InAppPurchasesApi;
     pub use crate::localization::InAppPurchaseLocalizationsApi;
     pub use crate::price::InAppPurchasePricesApi;
+    pub use crate::promotional_image::InAppPurchasePromotionalImageApi;
     pub use crate::review_screenshot::InAppPurchaseReviewScreenshotApi;
 }

@@ -1953,6 +1953,15 @@ enum InAppPurchasesCommand {
         #[arg(long)]
         replace: bool,
     },
+    /// Upload the 1024x1024 promotional image the App Store shows for the
+    /// product. A product can hold several; --replace deletes the existing
+    /// ones first.
+    PromotionalImage {
+        id: String,
+        path: PathBuf,
+        #[arg(long)]
+        replace: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -3760,12 +3769,14 @@ async fn run_in_app_purchases(
             let manual_prices = client.list_manual_prices(&id).await?;
             let availability = client.get_in_app_purchase_availability(&id).await?;
             let screenshot = client.get_review_screenshot(&id).await?;
+            let images = client.list_promotional_images(&id).await?;
             print_json(&serde_json::json!({
                 "product": product,
                 "localizations": localizations,
                 "manualPrices": manual_prices,
                 "availability": availability,
                 "reviewScreenshot": screenshot,
+                "promotionalImages": images,
             }))
         }
         InAppPurchasesCommand::Create {
@@ -4040,6 +4051,45 @@ async fn run_in_app_purchases(
                 anyhow::bail!(
                     "a different screenshot reads back ({}) than the one uploaded ({})",
                     back.id,
+                    uploaded.id
+                );
+            }
+            print_json(&back)
+        }
+        InAppPurchasesCommand::PromotionalImage { id, path, replace } => {
+            let bytes =
+                std::fs::read(&path).with_context(|| format!("cannot read {}", path.display()))?;
+            let file_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .context("the image path has no file name")?
+                .to_string();
+            let existing = client.list_promotional_images(&id).await?;
+            if dry_run {
+                println!(
+                    "# dry run: would {}upload {file_name} ({} bytes) as a promotional image of {id}",
+                    if existing.is_empty() { "" } else { "delete the current images and " },
+                    bytes.len()
+                );
+                return Ok(());
+            }
+            if !existing.is_empty() && !replace {
+                anyhow::bail!(
+                    "{id} already has {} promotional image(s); pass --replace",
+                    existing.len()
+                );
+            }
+            for old in &existing {
+                client.delete_promotional_image(&old.id).await?;
+            }
+            let uploaded = client
+                .upload_promotional_image(&id, file_name, bytes)
+                .await?;
+            let back = client.list_promotional_images(&id).await?;
+            if !back.iter().any(|i| i.id == uploaded.id) {
+                anyhow::bail!(
+                    "the image was committed but {} does not list it ({})",
+                    id,
                     uploaded.id
                 );
             }

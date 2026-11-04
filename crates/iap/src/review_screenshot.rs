@@ -17,7 +17,7 @@ use smbcloud_ascapi_core::{Client, Error, Result};
 pub const RESOURCE_TYPE: &str = "inAppPurchaseAppStoreReviewScreenshots";
 
 /// Apple sends `null` for these lists once an asset is committed.
-fn null_as_default<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
+pub(crate) fn null_as_default<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
 where
     D: Deserializer<'de>,
     T: Default + Deserialize<'de>,

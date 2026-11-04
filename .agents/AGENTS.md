@@ -91,6 +91,7 @@ asc in-app-purchases price-points <IAP_ID> [--territory USA]
 asc in-app-purchases set-price <IAP_ID> --price 4.99 [--territory USA]
 asc in-app-purchases set-availability <IAP_ID> (--all-territories | --territory SWE …) [--no-new-territories]
 asc in-app-purchases review-screenshot <IAP_ID> paywall.png [--replace]
+asc in-app-purchases promotional-image <IAP_ID> unlock.png [--replace]   # optional 1024x1024 store image
 ```
 
 - Every write honours the global `--dry-run` and reads the result back,
