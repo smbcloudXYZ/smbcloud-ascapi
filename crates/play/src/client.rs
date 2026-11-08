@@ -270,23 +270,35 @@ impl PlayClient {
         Ok(deleted.deleted.len())
     }
 
-    /// All one-time products of the app, as Play returns them.
+    /// All one-time products of the app, as Play returns them, following
+    /// `nextPageToken` so an app with more than one page is not truncated.
     pub async fn list_products(&self, package: &str) -> Result<Vec<serde_json::Value>> {
-        // An app with no products can answer with an empty body, not `{}`.
-        let text = self
-            .send(Method::GET, &products_path(package, ""), None)
-            .await?
-            .text()
-            .await?;
-        if text.trim().is_empty() {
-            return Ok(Vec::new());
+        let mut products = Vec::new();
+        let mut page_token: Option<String> = None;
+        loop {
+            let suffix = match &page_token {
+                Some(token) => format!("?pageToken={token}"),
+                None => String::new(),
+            };
+            // An app with no products can answer with an empty body, not `{}`.
+            let text = self
+                .send(Method::GET, &products_path(package, &suffix), None)
+                .await?
+                .text()
+                .await?;
+            if text.trim().is_empty() {
+                break;
+            }
+            let page: serde_json::Value = serde_json::from_str(&text)?;
+            if let Some(items) = page.get("oneTimeProducts").and_then(|v| v.as_array()) {
+                products.extend(items.iter().cloned());
+            }
+            match page.get("nextPageToken").and_then(|v| v.as_str()) {
+                Some(token) if !token.is_empty() => page_token = Some(token.to_string()),
+                _ => break,
+            }
         }
-        let page: serde_json::Value = serde_json::from_str(&text)?;
-        Ok(page
-            .get("oneTimeProducts")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default())
+        Ok(products)
     }
 
     pub async fn get_product(&self, package: &str, product_id: &str) -> Result<serde_json::Value> {

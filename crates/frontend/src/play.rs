@@ -636,8 +636,16 @@ pub async fn create_product(
     client
         .activate_purchase_option(package, id, &product.purchase_option_id)
         .await
-        .map_err(err)?;
-    let stored = client.get_product(package, id).await.map_err(err)?;
+        .map_err(|e| {
+            format!(
+                "created {id}, but activating its purchase option failed: {}",
+                err(e)
+            )
+        })?;
+    let stored = client
+        .get_product(package, id)
+        .await
+        .map_err(|e| format!("created {id}, but reading it back failed: {}", err(e)))?;
     let state = stored
         .pointer("/purchaseOptions/0/state")
         .and_then(|v| v.as_str());
