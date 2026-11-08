@@ -40,7 +40,10 @@ use smbcloud_ascapi_iap::in_app_purchase::{
 use smbcloud_ascapi_iap::localization::LocalizationUpdate;
 use smbcloud_ascapi_iap::prelude::*;
 use smbcloud_ascapi_msstore::ListingFields as MsStoreListingFields;
-use smbcloud_ascapi_play::{ImageType as PlayImageType, ListingFields as PlayListingFields};
+use smbcloud_ascapi_play::{
+    ImageType as PlayImageType, ListingFields as PlayListingFields, Money as PlayMoney,
+    NewProduct as PlayNewProduct,
+};
 use smbcloud_ascapi_pricing::app_price::PriceKind;
 use smbcloud_ascapi_pricing::prelude::*;
 use smbcloud_ascapi_reports::prelude::*;
@@ -109,6 +112,16 @@ enum PlayCommand {
     Tracks {
         #[command(subcommand)]
         command: PlayTracksCommand,
+    },
+    /// Upload an app bundle (.aab) to a track.
+    Bundles {
+        #[command(subcommand)]
+        command: PlayBundlesCommand,
+    },
+    /// One-time products (in-app products): list, read, create.
+    Products {
+        #[command(subcommand)]
+        command: PlayProductsCommand,
     },
 }
 
@@ -622,6 +635,68 @@ enum PlayTracksCommand {
     /// The highest version code on any track, printed as a number. Play
     /// rejects an upload whose code is not above it.
     MaxVersionCode { package: String },
+}
+
+#[derive(Subcommand)]
+enum PlayBundlesCommand {
+    /// Upload an .aab and put it on a track as a new release, in one edit.
+    /// Play's SHA-256 is compared with the local file's and the track is read
+    /// back after the commit. A draft or inProgress release on the track is
+    /// replaced; completed ones stay. The version code is printed so a script
+    /// can chain `tracks set-notes` or `tracks promote`. A real upload uses up
+    /// its version code for good. With `--dry-run` only local checks run and
+    /// nothing is sent: the file is a zip with a base manifest, and the
+    /// mapping file exists.
+    Upload {
+        package: String,
+        /// The .aab to upload.
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long)]
+        track: String,
+        /// Release status on the track: draft (the default) or completed.
+        #[arg(long, default_value = "draft")]
+        status: String,
+        /// ProGuard/R8 mapping.txt for the uploaded version code.
+        #[arg(long)]
+        mapping_file: Option<PathBuf>,
+        /// Accept an install-time warning Play would otherwise refuse the
+        /// bundle for.
+        #[arg(long)]
+        ack_install_warning: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum PlayProductsCommand {
+    /// Every one-time product of the app.
+    List { package: String },
+    /// One one-time product by id.
+    Get { package: String, product_id: String },
+    /// Create a one-time product, price it in every region from one price,
+    /// and activate it. Refuses an id that exists. With `--dry-run` it prints
+    /// the product body and sends nothing.
+    Create {
+        package: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        title: String,
+        #[arg(long)]
+        description: String,
+        /// Price in `--currency`, for example 4.99. Play converts it to every
+        /// other region, as Play Console does.
+        #[arg(long)]
+        price: String,
+        #[arg(long, default_value = "USD")]
+        currency: String,
+        /// Language of the title and description; the app's default language.
+        #[arg(long)]
+        language: String,
+        /// Purchase option id.
+        #[arg(long, default_value = "buy")]
+        option_id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1219,6 +1294,35 @@ async fn run_play(
     dry_run: bool,
 ) -> Result<()> {
     use smbcloud_ascapi_frontend::play;
+    // A bundle dry run is local: no credentials needed, nothing sent.
+    if let PlayCommand::Bundles {
+        command:
+            PlayBundlesCommand::Upload {
+                package,
+                file,
+                track,
+                status,
+                mapping_file,
+                ack_install_warning,
+            },
+    } = &command
+    {
+        if dry_run {
+            let plan = play::plan_bundle_upload(
+                package,
+                track,
+                file,
+                status,
+                mapping_file.as_deref(),
+                *ack_install_warning,
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
+            println!(
+                "# dry run: nothing was sent; the version code is assigned by Play on upload:"
+            );
+            return print_json(&plan);
+        }
+    }
     let client = play::play_client(service_account).map_err(|e| anyhow::anyhow!(e))?;
     let fail = |e: String| anyhow::anyhow!(e);
     match command {
@@ -1384,6 +1488,69 @@ async fn run_play(
                     .map_err(fail)?;
                 println!("{code}");
                 Ok(())
+            }
+        },
+        PlayCommand::Bundles { command } => match command {
+            PlayBundlesCommand::Upload {
+                package,
+                file,
+                track,
+                status,
+                mapping_file,
+                ack_install_warning,
+            } => {
+                let result = play::upload_bundle(
+                    &client,
+                    &package,
+                    &track,
+                    &file,
+                    &status,
+                    mapping_file.as_deref(),
+                    ack_install_warning,
+                )
+                .await
+                .map_err(fail)?;
+                print_json(&result)
+            }
+        },
+        PlayCommand::Products { command } => match command {
+            PlayProductsCommand::List { package } => {
+                print_json(&play::read_products(&client, &package).await.map_err(fail)?)
+            }
+            PlayProductsCommand::Get {
+                package,
+                product_id,
+            } => print_json(
+                &play::read_product(&client, &package, &product_id)
+                    .await
+                    .map_err(fail)?,
+            ),
+            PlayProductsCommand::Create {
+                package,
+                id,
+                title,
+                description,
+                price,
+                currency,
+                language,
+                option_id,
+            } => {
+                let price = PlayMoney::parse(&currency, &price).map_err(|e| fail(e.to_string()))?;
+                let product = PlayNewProduct {
+                    package,
+                    product_id: id,
+                    language,
+                    title,
+                    description,
+                    purchase_option_id: option_id,
+                };
+                let result = play::create_product(&client, &product, &price, dry_run)
+                    .await
+                    .map_err(fail)?;
+                if result.dry_run {
+                    println!("# dry run: nothing was created; body that would be sent:");
+                }
+                print_json(&result)
             }
         },
     }

@@ -161,6 +161,48 @@ impl Track {
         })
     }
 
+    /// Plan placing a freshly uploaded `version_code` on this track as a
+    /// new release at `status` (`draft` or `completed`).
+    ///
+    /// Follows the same rule as [`Track::promote_from`]: an `inProgress` or
+    /// `draft` release is replaced, `completed` ones stay. Unmodelled fields
+    /// on releases that stay are untouched. The new release has no notes;
+    /// `tracks set-notes` adds them afterwards.
+    pub fn place_uploaded(
+        &self,
+        version_code: &str,
+        status: &str,
+    ) -> std::result::Result<Track, String> {
+        if !matches!(status, "draft" | "completed") {
+            return Err(format!(
+                "status {status:?} is not supported for an upload; use draft or completed"
+            ));
+        }
+        let release = TrackRelease {
+            name: None,
+            version_codes: vec![version_code.to_string()],
+            status: Some(status.to_string()),
+            user_fraction: None,
+            release_notes: Vec::new(),
+            country_targeting: None,
+            extra: Default::default(),
+        };
+        let mut releases: Vec<TrackRelease> = self
+            .releases
+            .iter()
+            .filter(|r| {
+                !matches!(r.status.as_deref(), Some("inProgress") | Some("draft"))
+                    && !r.version_codes.iter().any(|c| c == version_code)
+            })
+            .cloned()
+            .collect();
+        releases.insert(0, release);
+        Ok(Track {
+            track: self.track.clone(),
+            releases,
+        })
+    }
+
     /// Plan `action` on the release carrying `version_code`. Only that
     /// release changes; the others (the `completed` one serving users during
     /// a staged rollout) are carried through. A fraction never goes down:
@@ -570,5 +612,34 @@ mod tests {
         );
         assert_eq!(t.max_version_code(), Some(2026110222));
         assert_eq!(production("").max_version_code(), None);
+    }
+
+    #[test]
+    fn place_uploaded_replaces_draft_and_keeps_completed() {
+        let t: Track = serde_json::from_str(
+            r#"{"track":"internal","releases":[
+            {"versionCodes":["5"],"status":"completed","futureField":{"a":1}},
+            {"versionCodes":["6"],"status":"draft","releaseNotes":[{"language":"en-US","text":"x"}]},
+            {"versionCodes":["7"],"status":"inProgress","userFraction":0.1}]}"#,
+        )
+        .unwrap();
+        let out = t.place_uploaded("8", "draft").unwrap();
+        assert_eq!(out.releases.len(), 2);
+        assert_eq!(out.releases[0].version_codes, vec!["8"]);
+        assert_eq!(out.releases[0].status.as_deref(), Some("draft"));
+        assert!(out.releases[0].release_notes.is_empty());
+        assert_eq!(out.releases[1].version_codes, vec!["5"]);
+        assert!(out.releases[1].extra.contains_key("futureField"));
+    }
+
+    #[test]
+    fn place_uploaded_on_an_empty_track_and_completed() {
+        let t = Track {
+            track: "production".into(),
+            releases: vec![],
+        };
+        let out = t.place_uploaded("1", "completed").unwrap();
+        assert_eq!(out.releases[0].status.as_deref(), Some("completed"));
+        assert!(t.place_uploaded("1", "inProgress").is_err());
     }
 }

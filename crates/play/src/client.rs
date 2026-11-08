@@ -24,11 +24,59 @@ pub(crate) fn edits_path(package: &str, suffix: &str) -> String {
     format!("/androidpublisher/v3/applications/{package}/edits{suffix}")
 }
 
+/// Build `/androidpublisher/v3/applications/{package}/oneTimeProducts…`.
+pub(crate) fn products_path(package: &str, suffix: &str) -> String {
+    format!("/androidpublisher/v3/applications/{package}/oneTimeProducts{suffix}")
+}
+
+/// `onetimeproducts.patch` is the one call in this resource whose path is
+/// all lowercase (`onetimeproducts`); get, list and the state changes use
+/// `oneTimeProducts`. Google's discovery document says so, and a wrong case is
+/// a 404 page from the front end.
+pub(crate) fn product_patch_path(package: &str, product_id: &str) -> String {
+    format!("/androidpublisher/v3/applications/{package}/onetimeproducts/{product_id}")
+}
+
 pub(crate) fn upload_path(package: &str, edit_id: &str, locale: &str, image: ImageType) -> String {
     format!(
         "/upload/androidpublisher/v3/applications/{package}/edits/{edit_id}/listings/{locale}/{}?uploadType=media",
         image.api_name()
     )
+}
+
+/// `POST` target for `edits.bundles.upload`. `ack_install_warning` asks Play
+/// to accept a bundle it would otherwise refuse for an install-time warning.
+pub(crate) fn bundle_upload_path(
+    package: &str,
+    edit_id: &str,
+    ack_install_warning: bool,
+) -> String {
+    let ack = if ack_install_warning {
+        "&ackBundleInstallationWarning=true"
+    } else {
+        ""
+    };
+    format!(
+        "/upload/androidpublisher/v3/applications/{package}/edits/{edit_id}/bundles?uploadType=media{ack}"
+    )
+}
+
+/// `POST` target for `edits.deobfuscationfiles.upload` (a ProGuard/R8
+/// mapping file for one uploaded version code).
+pub(crate) fn deobfuscation_path(package: &str, edit_id: &str, version_code: u64) -> String {
+    format!(
+        "/upload/androidpublisher/v3/applications/{package}/edits/{edit_id}/apks/{version_code}/deobfuscationFiles/proguard?uploadType=media"
+    )
+}
+
+/// What Play reports for an uploaded bundle.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadedBundle {
+    pub version_code: u64,
+    /// Lowercase hex SHA-256 of the bundle as Play received it.
+    #[serde(default)]
+    pub sha256: String,
 }
 
 pub struct PlayClient {
@@ -236,6 +284,45 @@ impl PlayClient {
         Ok(uploaded.image)
     }
 
+    /// Upload an `.aab` into the edit. The version code is assigned by Play
+    /// from the bundle and consumed for good, even if the edit is later
+    /// discarded.
+    pub async fn upload_bundle(
+        &self,
+        package: &str,
+        edit_id: &str,
+        bytes: Vec<u8>,
+        ack_install_warning: bool,
+    ) -> Result<UploadedBundle> {
+        let path = bundle_upload_path(package, edit_id, ack_install_warning);
+        let response = self
+            .send(
+                Method::POST,
+                &path,
+                Some(("application/octet-stream", bytes)),
+            )
+            .await?;
+        Ok(response.json().await?)
+    }
+
+    /// Attach a ProGuard/R8 `mapping.txt` to an uploaded version code.
+    pub async fn upload_deobfuscation(
+        &self,
+        package: &str,
+        edit_id: &str,
+        version_code: u64,
+        bytes: Vec<u8>,
+    ) -> Result<()> {
+        let path = deobfuscation_path(package, edit_id, version_code);
+        self.send(
+            Method::POST,
+            &path,
+            Some(("application/octet-stream", bytes)),
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Remove every image in a bucket; returns how many Play reports deleted.
     pub async fn delete_all_images(
         &self,
@@ -255,6 +342,105 @@ impl PlayClient {
         );
         let deleted: Deleted = self.json(Method::DELETE, &path, None::<&()>).await?;
         Ok(deleted.deleted.len())
+    }
+
+    /// All one-time products of the app, as Play returns them, following
+    /// `nextPageToken` so an app with more than one page is not truncated.
+    pub async fn list_products(&self, package: &str) -> Result<Vec<serde_json::Value>> {
+        let mut products = Vec::new();
+        let mut page_token: Option<String> = None;
+        loop {
+            let suffix = match &page_token {
+                Some(token) => format!("?pageToken={token}"),
+                None => String::new(),
+            };
+            // An app with no products can answer with an empty body, not `{}`.
+            let text = self
+                .send(Method::GET, &products_path(package, &suffix), None)
+                .await?
+                .text()
+                .await?;
+            if text.trim().is_empty() {
+                break;
+            }
+            let page: serde_json::Value = serde_json::from_str(&text)?;
+            if let Some(items) = page.get("oneTimeProducts").and_then(|v| v.as_array()) {
+                products.extend(items.iter().cloned());
+            }
+            match page.get("nextPageToken").and_then(|v| v.as_str()) {
+                Some(token) if !token.is_empty() => page_token = Some(token.to_string()),
+                _ => break,
+            }
+        }
+        Ok(products)
+    }
+
+    pub async fn get_product(&self, package: &str, product_id: &str) -> Result<serde_json::Value> {
+        self.json(
+            Method::GET,
+            &products_path(package, &format!("/{product_id}")),
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// `pricing:convertRegionPrices`: one price in, a price for every region out.
+    pub async fn convert_region_prices(
+        &self,
+        package: &str,
+        price: &crate::product::Money,
+    ) -> Result<serde_json::Value> {
+        let path =
+            format!("/androidpublisher/v3/applications/{package}/pricing:convertRegionPrices");
+        self.json(
+            Method::POST,
+            &path,
+            Some(&serde_json::json!({ "price": price.to_json() })),
+        )
+        .await
+    }
+
+    /// `onetimeproducts.patch` with `allowMissing`, so it creates the product
+    /// when it does not exist. `regions_version` is the one the prices were
+    /// converted against.
+    pub async fn upsert_product(
+        &self,
+        package: &str,
+        product_id: &str,
+        body: &serde_json::Value,
+        regions_version: &str,
+    ) -> Result<serde_json::Value> {
+        let path = format!(
+            "{}?allowMissing=true&updateMask=listings,purchaseOptions&regionsVersion.version={}",
+            product_patch_path(package, product_id),
+            regions_version.replace('/', "%2F"),
+        );
+        self.json(Method::PATCH, &path, Some(body)).await
+    }
+
+    /// Activate one purchase option, which is what makes the product buyable.
+    pub async fn activate_purchase_option(
+        &self,
+        package: &str,
+        product_id: &str,
+        purchase_option_id: &str,
+    ) -> Result<serde_json::Value> {
+        let path = format!(
+            "{}:batchUpdateStates",
+            products_path(package, &format!("/{product_id}/purchaseOptions"))
+        );
+        self.json(
+            Method::POST,
+            &path,
+            Some(&serde_json::json!({ "requests": [{
+                "activatePurchaseOptionRequest": {
+                    "packageName": package,
+                    "productId": product_id,
+                    "purchaseOptionId": purchase_option_id,
+                }
+            }]})),
+        )
+        .await
     }
 
     pub async fn get_track(&self, package: &str, edit_id: &str, track: &str) -> Result<Track> {
@@ -314,10 +500,50 @@ mod tests {
     }
 
     #[test]
+    fn product_urls_use_the_one_time_products_resource() {
+        assert_eq!(
+            products_path("p", "/app.unlock"),
+            "/androidpublisher/v3/applications/p/oneTimeProducts/app.unlock"
+        );
+    }
+
+    #[test]
+    fn the_product_patch_path_is_lowercase() {
+        assert_eq!(
+            product_patch_path("p", "app.unlock"),
+            "/androidpublisher/v3/applications/p/onetimeproducts/app.unlock"
+        );
+    }
+
+    #[test]
     fn uploads_use_the_upload_host_path_with_media_type() {
         assert_eq!(
             upload_path("p", "E1", "en-US", ImageType::PhoneScreenshots),
             "/upload/androidpublisher/v3/applications/p/edits/E1/listings/en-US/phoneScreenshots?uploadType=media"
         );
+    }
+
+    #[test]
+    fn bundle_upload_urls() {
+        assert_eq!(
+            bundle_upload_path("p", "E1", false),
+            "/upload/androidpublisher/v3/applications/p/edits/E1/bundles?uploadType=media"
+        );
+        assert_eq!(
+            bundle_upload_path("p", "E1", true),
+            "/upload/androidpublisher/v3/applications/p/edits/E1/bundles?uploadType=media&ackBundleInstallationWarning=true"
+        );
+        assert_eq!(
+            deobfuscation_path("p", "E1", 42),
+            "/upload/androidpublisher/v3/applications/p/edits/E1/apks/42/deobfuscationFiles/proguard?uploadType=media"
+        );
+    }
+
+    #[test]
+    fn uploaded_bundle_parses_play_response() {
+        let b: UploadedBundle =
+            serde_json::from_str(r#"{"versionCode":7,"sha256":"ab12"}"#).unwrap();
+        assert_eq!(b.version_code, 7);
+        assert_eq!(b.sha256, "ab12");
     }
 }

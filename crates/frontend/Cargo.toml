@@ -24,3 +24,4 @@ smbcloud-ascapi-core = { workspace = true }
 smbcloud-ascapi-play = { workspace = true }
 smbcloud-ascapi-signing = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }

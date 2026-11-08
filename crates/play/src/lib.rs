@@ -12,14 +12,16 @@ pub mod client;
 pub mod error;
 pub mod image;
 pub mod listing;
+pub mod product;
 pub mod track;
 
 pub use auth::ServiceAccount;
-pub use client::{Edit, PlayClient};
+pub use client::{Edit, PlayClient, UploadedBundle};
 pub use error::{Error, Result};
 pub use image::{png_dimensions, Image, ImageType};
 pub use listing::{
     Listing, ListingFields, FULL_DESCRIPTION_MAX_LEN, RELEASE_NOTES_MAX_LEN,
     SHORT_DESCRIPTION_MAX_LEN, TITLE_MAX_LEN,
 };
+pub use product::{Money, NewProduct};
 pub use track::{LocalizedText, PromotePlan, RolloutAction, RolloutPlan, Track, TrackRelease};
