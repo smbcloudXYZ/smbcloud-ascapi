@@ -716,6 +716,10 @@ enum PlayProductsCommand {
         price: Option<String>,
         #[arg(long, default_value = "USD")]
         currency: String,
+        /// Which purchase option a price change re-prices; optional when the
+        /// product has one option.
+        #[arg(long)]
+        purchase_option: Option<String>,
     },
     /// Make a product buyable again. Without `--purchase-option`, uses the
     /// product's only option.
@@ -1596,6 +1600,7 @@ async fn run_play(
                 language,
                 price,
                 currency,
+                purchase_option,
             } => {
                 let price = price
                     .map(|p| PlayMoney::parse(&currency, &p))
@@ -1606,6 +1611,7 @@ async fn run_play(
                     description,
                     language,
                     price,
+                    purchase_option,
                 };
                 let result =
                     play::update_product(&client, &package, &product_id, &changes, dry_run)

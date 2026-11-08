@@ -227,6 +227,9 @@ pub struct ProductChanges {
     /// Which listing to change; optional when the product has one listing.
     pub language: Option<String>,
     pub price: Option<Money>,
+    /// Which purchase option a price change re-prices; optional when the
+    /// product has one option.
+    pub purchase_option: Option<String>,
 }
 
 impl ProductChanges {
@@ -310,7 +313,9 @@ pub fn update_body(
                 .to_string(),
             _ => {
                 return Err(Error::Invalid(
-                    "the product has several listings; pass --language".to_string(),
+                    "pass --language to name the listing to change (a new one also needs \
+                     --title and --description)"
+                        .to_string(),
                 ))
             }
         };
@@ -351,7 +356,7 @@ pub fn update_body(
             .and_then(Value::as_object)
             .filter(|m| !m.is_empty())
             .ok_or_else(|| Error::Invalid("Play returned no regional prices".to_string()))?;
-        let target = pick_purchase_option(product, None)?;
+        let target = pick_purchase_option(product, changes.purchase_option.as_deref())?;
         let mut all: Vec<Value> = options(product).to_vec();
         for option in all.iter_mut() {
             if option.get("purchaseOptionId").and_then(Value::as_str) != Some(target.as_str()) {
@@ -687,6 +692,51 @@ mod tests {
         assert_eq!(configs[1]["availability"], "UNAVAILABLE");
         assert_eq!(option["newRegionsConfig"]["eurPrice"]["units"], "6");
         assert_eq!(existing_price(&stored_product()).unwrap().currency, "GBP");
+    }
+
+    #[test]
+    fn a_price_update_names_the_option_when_the_product_has_several() {
+        let converted = json!({
+            "regionVersion": { "version": "2022/02" },
+            "convertedRegionPrices": {
+                "GB": { "price": { "currencyCode": "GBP", "units": "5", "nanos": 0 } }
+            }
+        });
+        let mut product = stored_product();
+        product["purchaseOptions"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "purchaseOptionId": "rent", "state": "ACTIVE",
+                "regionalPricingAndAvailabilityConfigs": [
+                    { "regionCode": "GB", "availability": "AVAILABLE",
+                      "price": { "currencyCode": "GBP", "units": "2", "nanos": 0 } }
+                ]
+            }));
+        let changes = ProductChanges {
+            price: Some(Money::parse("USD", "5").unwrap()),
+            ..Default::default()
+        };
+        assert!(update_body(&product, &changes, Some(&converted))
+            .unwrap_err()
+            .to_string()
+            .contains("--purchase-option"));
+        let changes = ProductChanges {
+            price: Some(Money::parse("USD", "5").unwrap()),
+            purchase_option: Some("rent".into()),
+            ..Default::default()
+        };
+        let body = update_body(&product, &changes, Some(&converted)).unwrap();
+        let repriced = body["purchaseOptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|o| o["purchaseOptionId"] == "rent")
+            .unwrap();
+        assert_eq!(
+            repriced["regionalPricingAndAvailabilityConfigs"][0]["price"]["units"],
+            "5"
+        );
     }
 
     #[test]

@@ -986,7 +986,10 @@ pub async fn update_product(
             stored: None,
         });
     }
-    let version = converted.as_ref().and_then(|c| regions_version(c).ok());
+    let version = match converted.as_ref() {
+        Some(c) => Some(regions_version(c).map_err(err)?),
+        None => None,
+    };
     client
         .update_product(package, product_id, &body, &mask, version.as_deref())
         .await
