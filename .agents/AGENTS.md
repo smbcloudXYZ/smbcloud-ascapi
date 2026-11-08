@@ -319,6 +319,8 @@ asc play bundles upload <PACKAGE> --file app.aab --track internal \
 asc play products list <PACKAGE>
 asc play products create <PACKAGE> --id app.unlock --title "Unlock" --description "..." \
   --price 4.99 --language en-GB     # --dry-run prints the body and sends nothing
+asc play products update <PACKAGE> <ID> [--title T] [--description D] [--language L] [--price 5.99 --currency USD]
+asc play products activate|deactivate <PACKAGE> <ID> [--purchase-option buy]
 ```
 
 Limits linted before sending: title 30, short description 80, full description
@@ -340,7 +342,16 @@ version code permanently, even if the edit fails afterwards. One-time products a
 (`pricing:convertRegionPrices`), creates the product with `onetimeproducts.patch`
 (`allowMissing`), activates its purchase option and reads it back; it refuses an
 id that exists. Note the patch path is lowercase `onetimeproducts` while get,
-list and the state change use `oneTimeProducts`. The operations live in
+list and the state change use `oneTimeProducts`.
+`products update` reads the product, changes only the given fields and patches
+with an `updateMask` and no `allowMissing`, so a mistyped id is a 404, not a new
+product; a price change is converted again and only touches regions the product
+already prices, keeping each region's availability. `activate` and `deactivate`
+use the product's only purchase option (`--purchase-option` if there are
+several) and read the state back. A `create` refused with a 4xx that mentions
+billing gets a line pointing at `asc play bundles upload`, since Play wants a
+build declaring `com.android.vending.BILLING` first; that match is covered by
+unit tests only. The operations live in
 `crates/frontend/src/play.rs`.
 
 **New apps.** An app that has never been published is a draft app, and the API cannot take

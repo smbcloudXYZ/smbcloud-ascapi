@@ -118,7 +118,7 @@ enum PlayCommand {
         #[command(subcommand)]
         command: PlayBundlesCommand,
     },
-    /// One-time products (in-app products): list, read, create.
+    /// One-time products (in-app products): list, read, create, update, activate, deactivate.
     Products {
         #[command(subcommand)]
         command: PlayProductsCommand,
@@ -696,6 +696,46 @@ enum PlayProductsCommand {
         /// Purchase option id.
         #[arg(long, default_value = "buy")]
         option_id: String,
+    },
+    /// Change a product's title, description or price. Only the fields given
+    /// change; the product must exist. With `--dry-run` it prints the patch
+    /// body and sends nothing.
+    Update {
+        package: String,
+        product_id: String,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+        /// Which listing's text to change; optional when the product has one.
+        #[arg(long)]
+        language: Option<String>,
+        /// New price in `--currency`, converted to every region the product
+        /// already prices.
+        #[arg(long)]
+        price: Option<String>,
+        #[arg(long, default_value = "USD")]
+        currency: String,
+        /// Which purchase option a price change re-prices; optional when the
+        /// product has one option.
+        #[arg(long)]
+        purchase_option: Option<String>,
+    },
+    /// Make a product buyable again. Without `--purchase-option`, uses the
+    /// product's only option.
+    Activate {
+        package: String,
+        product_id: String,
+        #[arg(long)]
+        purchase_option: Option<String>,
+    },
+    /// Stop selling a product. Without `--purchase-option`, uses the
+    /// product's only option.
+    Deactivate {
+        package: String,
+        product_id: String,
+        #[arg(long)]
+        purchase_option: Option<String>,
     },
 }
 
@@ -1549,6 +1589,76 @@ async fn run_play(
                     .map_err(fail)?;
                 if result.dry_run {
                     println!("# dry run: nothing was created; body that would be sent:");
+                }
+                print_json(&result)
+            }
+            PlayProductsCommand::Update {
+                package,
+                product_id,
+                title,
+                description,
+                language,
+                price,
+                currency,
+                purchase_option,
+            } => {
+                let price = price
+                    .map(|p| PlayMoney::parse(&currency, &p))
+                    .transpose()
+                    .map_err(|e| fail(e.to_string()))?;
+                let changes = smbcloud_ascapi_play::ProductChanges {
+                    title,
+                    description,
+                    language,
+                    price,
+                    purchase_option,
+                };
+                let result =
+                    play::update_product(&client, &package, &product_id, &changes, dry_run)
+                        .await
+                        .map_err(fail)?;
+                if result.dry_run {
+                    println!("# dry run: nothing was changed; patch that would be sent:");
+                }
+                print_json(&result)
+            }
+            PlayProductsCommand::Activate {
+                package,
+                product_id,
+                purchase_option,
+            } => {
+                let result = play::set_purchase_option_active(
+                    &client,
+                    &package,
+                    &product_id,
+                    purchase_option.as_deref(),
+                    true,
+                    dry_run,
+                )
+                .await
+                .map_err(fail)?;
+                if result.dry_run {
+                    println!("# dry run: nothing was changed:");
+                }
+                print_json(&result)
+            }
+            PlayProductsCommand::Deactivate {
+                package,
+                product_id,
+                purchase_option,
+            } => {
+                let result = play::set_purchase_option_active(
+                    &client,
+                    &package,
+                    &product_id,
+                    purchase_option.as_deref(),
+                    false,
+                    dry_run,
+                )
+                .await
+                .map_err(fail)?;
+                if result.dry_run {
+                    println!("# dry run: nothing was changed:");
                 }
                 print_json(&result)
             }

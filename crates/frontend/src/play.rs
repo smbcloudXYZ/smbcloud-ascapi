@@ -11,9 +11,12 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use smbcloud_ascapi_play::{
     png_dimensions,
-    product::{product_body, regions_version},
-    Image, ImageType, Listing, ListingFields, Money, NewProduct, PlayClient, RolloutAction,
-    ServiceAccount, Track,
+    product::{
+        check_applied, existing_price, is_billing_refusal, pick_purchase_option, product_body,
+        purchase_option_state, regions_version, BILLING_HINT,
+    },
+    Image, ImageType, Listing, ListingFields, Money, NewProduct, PlayClient, ProductChanges,
+    RolloutAction, ServiceAccount, Track,
 };
 
 /// Resolve the Play client. `path` wins; then `PLAY_SERVICE_ACCOUNT_JSON_PATH`;
@@ -750,6 +753,16 @@ pub async fn read_product(
     client.get_product(package, product_id).await.map_err(err)
 }
 
+/// An error message, with a line on uploading a BILLING build when Play's
+/// refusal looks like it is about billing.
+fn with_billing_hint(error: smbcloud_ascapi_play::Error) -> String {
+    if is_billing_refusal(&error) {
+        format!("{error}\n{BILLING_HINT}")
+    } else {
+        err(error)
+    }
+}
+
 /// The result of creating a one-time product.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -800,14 +813,14 @@ pub async fn create_product(
     client
         .upsert_product(package, id, &body, &version)
         .await
-        .map_err(err)?;
+        .map_err(with_billing_hint)?;
     client
         .activate_purchase_option(package, id, &product.purchase_option_id)
         .await
         .map_err(|e| {
             format!(
                 "created {id}, but activating its purchase option failed: {}",
-                err(e)
+                with_billing_hint(e)
             )
         })?;
     let stored = client
@@ -825,6 +838,176 @@ pub async fn create_product(
     }
     Ok(ProductCreated {
         dry_run,
+        sent: body,
+        stored: Some(stored),
+    })
+}
+
+/// The result of activating or deactivating a purchase option.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PurchaseOptionStateChanged {
+    pub dry_run: bool,
+    pub purchase_option_id: String,
+    /// The state before.
+    pub from: Option<String>,
+    /// The state after (read back), or the one that would be set on a dry run.
+    pub to: String,
+    /// It already was in the requested state, so nothing was sent.
+    pub noop: bool,
+}
+
+/// Activate or deactivate one purchase option, then read the state back. With
+/// no `purchase_option_id`, the product's only option is used; several options
+/// make that an error.
+pub async fn set_purchase_option_active(
+    client: &PlayClient,
+    package: &str,
+    product_id: &str,
+    purchase_option_id: Option<&str>,
+    activate: bool,
+    dry_run: bool,
+) -> Result<PurchaseOptionStateChanged, String> {
+    let product = client.get_product(package, product_id).await.map_err(err)?;
+    let option = pick_purchase_option(&product, purchase_option_id).map_err(err)?;
+    let from = purchase_option_state(&product, &option).map(str::to_string);
+    let wanted = |state: &str| {
+        if activate {
+            state == "ACTIVE"
+        } else {
+            state.starts_with("INACTIVE")
+        }
+    };
+    let target = if activate { "ACTIVE" } else { "INACTIVE" }.to_string();
+    if from.as_deref().is_some_and(wanted) {
+        return Ok(PurchaseOptionStateChanged {
+            dry_run,
+            purchase_option_id: option,
+            to: from.clone().unwrap_or(target),
+            from,
+            noop: true,
+        });
+    }
+    if dry_run {
+        return Ok(PurchaseOptionStateChanged {
+            dry_run,
+            purchase_option_id: option,
+            from,
+            to: target,
+            noop: false,
+        });
+    }
+    if activate {
+        client
+            .activate_purchase_option(package, product_id, &option)
+            .await
+    } else {
+        client
+            .deactivate_purchase_option(package, product_id, &option)
+            .await
+    }
+    .map_err(with_billing_hint)?;
+    let stored = client.get_product(package, product_id).await.map_err(|e| {
+        format!(
+            "changed the state of {product_id}, but reading it back failed: {}",
+            err(e)
+        )
+    })?;
+    let state = purchase_option_state(&stored, &option).unwrap_or("missing");
+    if !wanted(state) {
+        return Err(format!(
+            "asked for {target} on {product_id}/{option}, but it reads back as {state}"
+        ));
+    }
+    Ok(PurchaseOptionStateChanged {
+        dry_run,
+        purchase_option_id: option,
+        from,
+        to: state.to_string(),
+        noop: false,
+    })
+}
+
+/// The result of updating a one-time product.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductUpdated {
+    pub dry_run: bool,
+    /// The `updateMask` sent.
+    pub update_mask: String,
+    /// The patch body that is sent (dry run) or was sent.
+    pub sent: serde_json::Value,
+    /// The product as read back after the update. `None` on a dry run.
+    pub stored: Option<serde_json::Value>,
+}
+
+/// Change a product's listing text and/or price. Reads the product, changes
+/// only what was given and patches with an `updateMask` and without
+/// `allowMissing`, so a mistyped id fails instead of creating a product. A
+/// dry run prints the body and sends nothing (the price conversion, if any,
+/// is a read).
+pub async fn update_product(
+    client: &PlayClient,
+    package: &str,
+    product_id: &str,
+    changes: &ProductChanges,
+    dry_run: bool,
+) -> Result<ProductUpdated, String> {
+    let product = client.get_product(package, product_id).await.map_err(err)?;
+    // Play wants the regions version quoted back on any write. Prices give it
+    // through the conversion; for a text-only change, convert a price the
+    // product already has, which sends nothing.
+    let probe = match (&changes.price, changes.touches_listings()) {
+        (Some(price), _) => Some(price.clone()),
+        (None, true) => Some(existing_price(&product).ok_or_else(|| {
+            "the product has no price to read a regions version from; \
+             pass --price to set one"
+                .to_string()
+        })?),
+        (None, false) => None,
+    };
+    let converted = match &probe {
+        Some(price) => Some(
+            client
+                .convert_region_prices(package, price)
+                .await
+                .map_err(err)?,
+        ),
+        None => None,
+    };
+    let body = smbcloud_ascapi_play::product::update_body(
+        &product,
+        changes,
+        changes.price.as_ref().and(converted.as_ref()),
+    )
+    .map_err(err)?;
+    let mask = changes.update_mask().to_string();
+    if dry_run {
+        return Ok(ProductUpdated {
+            dry_run,
+            update_mask: mask,
+            sent: body,
+            stored: None,
+        });
+    }
+    let version = match converted.as_ref() {
+        Some(c) => Some(regions_version(c).map_err(err)?),
+        None => None,
+    };
+    client
+        .update_product(package, product_id, &body, &mask, version.as_deref())
+        .await
+        .map_err(err)?;
+    let stored = client.get_product(package, product_id).await.map_err(|e| {
+        format!(
+            "updated {product_id}, but reading it back failed: {}",
+            err(e)
+        )
+    })?;
+    check_applied(&stored, &body)?;
+    Ok(ProductUpdated {
+        dry_run,
+        update_mask: mask,
         sent: body,
         stored: Some(stored),
     })
@@ -938,5 +1121,20 @@ mod tests {
         assert!(bundle_landed(&track, "8", "draft"));
         assert!(!bundle_landed(&track, "8", "completed"));
         assert!(!bundle_landed(&track, "9", "draft"));
+    }
+
+    #[test]
+    fn billing_refusals_get_the_upload_hint() {
+        let refusal = smbcloud_ascapi_play::Error::Api {
+            status: 400,
+            detail: "no Billing permission".into(),
+        };
+        let message = with_billing_hint(refusal);
+        assert!(message.contains("asc play bundles upload"));
+        let other = smbcloud_ascapi_play::Error::Api {
+            status: 400,
+            detail: "bad price".into(),
+        };
+        assert!(!with_billing_hint(other).contains("bundles upload"));
     }
 }

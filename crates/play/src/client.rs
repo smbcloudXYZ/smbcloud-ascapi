@@ -79,6 +79,24 @@ pub struct UploadedBundle {
     pub sha256: String,
 }
 
+/// Path and query for a patch that must not create: no `allowMissing`.
+pub(crate) fn product_update_path(
+    package: &str,
+    product_id: &str,
+    update_mask: &str,
+    regions_version: Option<&str>,
+) -> String {
+    let mut path = format!(
+        "{}?updateMask={update_mask}",
+        product_patch_path(package, product_id)
+    );
+    if let Some(version) = regions_version {
+        path.push_str("&regionsVersion.version=");
+        path.push_str(&version.replace('/', "%2F"));
+    }
+    path
+}
+
 pub struct PlayClient {
     http: reqwest::Client,
     account: ServiceAccount,
@@ -425,22 +443,54 @@ impl PlayClient {
         product_id: &str,
         purchase_option_id: &str,
     ) -> Result<serde_json::Value> {
+        self.set_purchase_option_state(package, product_id, purchase_option_id, true)
+            .await
+    }
+
+    /// Deactivate one purchase option, which stops the product being sold.
+    pub async fn deactivate_purchase_option(
+        &self,
+        package: &str,
+        product_id: &str,
+        purchase_option_id: &str,
+    ) -> Result<serde_json::Value> {
+        self.set_purchase_option_state(package, product_id, purchase_option_id, false)
+            .await
+    }
+
+    async fn set_purchase_option_state(
+        &self,
+        package: &str,
+        product_id: &str,
+        purchase_option_id: &str,
+        activate: bool,
+    ) -> Result<serde_json::Value> {
         let path = format!(
             "{}:batchUpdateStates",
             products_path(package, &format!("/{product_id}/purchaseOptions"))
         );
-        self.json(
-            Method::POST,
-            &path,
-            Some(&serde_json::json!({ "requests": [{
-                "activatePurchaseOptionRequest": {
-                    "packageName": package,
-                    "productId": product_id,
-                    "purchaseOptionId": purchase_option_id,
-                }
-            }]})),
-        )
-        .await
+        let body = crate::product::purchase_option_state_body(
+            package,
+            product_id,
+            purchase_option_id,
+            activate,
+        );
+        self.json(Method::POST, &path, Some(&body)).await
+    }
+
+    /// `onetimeproducts.patch` without `allowMissing`: it changes the masked
+    /// parts of a product that exists, and a mistyped id is a 404 instead of
+    /// a new product. `regions_version` is sent when prices are involved.
+    pub async fn update_product(
+        &self,
+        package: &str,
+        product_id: &str,
+        body: &serde_json::Value,
+        update_mask: &str,
+        regions_version: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let path = product_update_path(package, product_id, update_mask, regions_version);
+        self.json(Method::PATCH, &path, Some(body)).await
     }
 
     pub async fn get_track(&self, package: &str, edit_id: &str, track: &str) -> Result<Track> {
@@ -545,5 +595,21 @@ mod tests {
             serde_json::from_str(r#"{"versionCode":7,"sha256":"ab12"}"#).unwrap();
         assert_eq!(b.version_code, 7);
         assert_eq!(b.sha256, "ab12");
+    }
+
+    #[test]
+    fn a_product_update_never_allows_missing() {
+        let path = product_update_path(
+            "p",
+            "app.unlock",
+            "listings,purchaseOptions",
+            Some("2022/02"),
+        );
+        assert_eq!(
+            path,
+            "/androidpublisher/v3/applications/p/onetimeproducts/app.unlock?updateMask=listings,purchaseOptions&regionsVersion.version=2022%2F02"
+        );
+        assert!(!path.contains("allowMissing"));
+        assert!(!product_update_path("p", "x", "listings", None).contains("regionsVersion"));
     }
 }
