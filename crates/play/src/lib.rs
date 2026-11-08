@@ -16,7 +16,7 @@ pub mod product;
 pub mod track;
 
 pub use auth::ServiceAccount;
-pub use client::{Edit, PlayClient};
+pub use client::{Edit, PlayClient, UploadedBundle};
 pub use error::{Error, Result};
 pub use image::{png_dimensions, Image, ImageType};
 pub use listing::{

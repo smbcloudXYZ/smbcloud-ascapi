@@ -113,6 +113,11 @@ enum PlayCommand {
         #[command(subcommand)]
         command: PlayTracksCommand,
     },
+    /// Upload an app bundle (.aab) to a track.
+    Bundles {
+        #[command(subcommand)]
+        command: PlayBundlesCommand,
+    },
     /// One-time products (in-app products): list, read, create.
     Products {
         #[command(subcommand)]
@@ -630,6 +635,36 @@ enum PlayTracksCommand {
     /// The highest version code on any track, printed as a number. Play
     /// rejects an upload whose code is not above it.
     MaxVersionCode { package: String },
+}
+
+#[derive(Subcommand)]
+enum PlayBundlesCommand {
+    /// Upload an .aab and put it on a track as a new release, in one edit.
+    /// Play's SHA-256 is compared with the local file's and the track is read
+    /// back after the commit. A draft or inProgress release on the track is
+    /// replaced; completed ones stay. The version code is printed so a script
+    /// can chain `tracks set-notes` or `tracks promote`. A real upload uses up
+    /// its version code for good. With `--dry-run` only local checks run and
+    /// nothing is sent: the file is a zip with a base manifest, and the
+    /// mapping file exists.
+    Upload {
+        package: String,
+        /// The .aab to upload.
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long)]
+        track: String,
+        /// Release status on the track: draft (the default) or completed.
+        #[arg(long, default_value = "draft")]
+        status: String,
+        /// ProGuard/R8 mapping.txt for the uploaded version code.
+        #[arg(long)]
+        mapping_file: Option<PathBuf>,
+        /// Accept an install-time warning Play would otherwise refuse the
+        /// bundle for.
+        #[arg(long)]
+        ack_install_warning: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1259,6 +1294,35 @@ async fn run_play(
     dry_run: bool,
 ) -> Result<()> {
     use smbcloud_ascapi_frontend::play;
+    // A bundle dry run is local: no credentials needed, nothing sent.
+    if let PlayCommand::Bundles {
+        command:
+            PlayBundlesCommand::Upload {
+                package,
+                file,
+                track,
+                status,
+                mapping_file,
+                ack_install_warning,
+            },
+    } = &command
+    {
+        if dry_run {
+            let plan = play::plan_bundle_upload(
+                package,
+                track,
+                file,
+                status,
+                mapping_file.as_deref(),
+                *ack_install_warning,
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
+            println!(
+                "# dry run: nothing was sent; the version code is assigned by Play on upload:"
+            );
+            return print_json(&plan);
+        }
+    }
     let client = play::play_client(service_account).map_err(|e| anyhow::anyhow!(e))?;
     let fail = |e: String| anyhow::anyhow!(e);
     match command {
@@ -1424,6 +1488,29 @@ async fn run_play(
                     .map_err(fail)?;
                 println!("{code}");
                 Ok(())
+            }
+        },
+        PlayCommand::Bundles { command } => match command {
+            PlayBundlesCommand::Upload {
+                package,
+                file,
+                track,
+                status,
+                mapping_file,
+                ack_install_warning,
+            } => {
+                let result = play::upload_bundle(
+                    &client,
+                    &package,
+                    &track,
+                    &file,
+                    &status,
+                    mapping_file.as_deref(),
+                    ack_install_warning,
+                )
+                .await
+                .map_err(fail)?;
+                print_json(&result)
             }
         },
         PlayCommand::Products { command } => match command {

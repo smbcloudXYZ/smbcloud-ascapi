@@ -375,6 +375,174 @@ pub async fn set_track_notes(
     Ok(NotesSet { dry_run, track })
 }
 
+/// The manifest every Android App Bundle carries.
+const BUNDLE_MANIFEST: &str = "base/manifest/AndroidManifest.xml";
+
+/// A bundle checked on disk, ready to upload.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleFile {
+    pub path: PathBuf,
+    pub bytes: u64,
+    /// Lowercase hex SHA-256 of the file, to compare with Play's.
+    pub sha256: String,
+}
+
+/// Check a file is an `.aab` (a zip with `base/manifest/AndroidManifest.xml`)
+/// and hash it. Nothing is sent.
+pub fn load_bundle(path: &Path) -> Result<(BundleFile, Vec<u8>), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes.as_slice()))
+        .map_err(|_| format!("{} is not a zip archive, so not an .aab", path.display()))?;
+    if archive.by_name(BUNDLE_MANIFEST).is_err() {
+        return Err(format!(
+            "{} has no {BUNDLE_MANIFEST}; it is a zip but not an Android App Bundle",
+            path.display()
+        ));
+    }
+    let file = BundleFile {
+        path: path.to_path_buf(),
+        bytes: bytes.len() as u64,
+        sha256: hex(&Sha256::digest(&bytes)),
+    };
+    Ok((file, bytes))
+}
+
+fn check_upload_status(status: &str) -> Result<(), String> {
+    match status {
+        "draft" | "completed" => Ok(()),
+        other => Err(format!(
+            "status {other:?} is not supported for an upload; use draft or completed"
+        )),
+    }
+}
+
+/// What `bundles upload --dry-run` reports. A dry run cannot know the version
+/// code: Play assigns it on upload.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundlePlan {
+    pub dry_run: bool,
+    pub package: String,
+    pub track: String,
+    pub status: String,
+    pub bundle: BundleFile,
+    pub mapping_file: Option<PathBuf>,
+    pub ack_install_warning: bool,
+}
+
+/// The local half of `bundles upload`: everything that can be checked without
+/// sending anything.
+pub fn plan_bundle_upload(
+    package: &str,
+    track: &str,
+    file: &Path,
+    status: &str,
+    mapping_file: Option<&Path>,
+    ack_install_warning: bool,
+) -> Result<BundlePlan, String> {
+    check_upload_status(status)?;
+    let (bundle, _) = load_bundle(file)?;
+    if let Some(mapping) = mapping_file {
+        if !mapping.is_file() {
+            return Err(format!("mapping file {} does not exist", mapping.display()));
+        }
+    }
+    Ok(BundlePlan {
+        dry_run: true,
+        package: package.to_string(),
+        track: track.to_string(),
+        status: status.to_string(),
+        bundle,
+        mapping_file: mapping_file.map(Path::to_path_buf),
+        ack_install_warning,
+    })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleUploaded {
+    /// Assigned by Play; use it with `tracks set-notes` or `tracks promote`.
+    pub version_code: u64,
+    pub sha256: String,
+    pub status: String,
+    pub mapping_uploaded: bool,
+    /// The track as read back after the commit.
+    pub track: Track,
+}
+
+/// Whether the read-back track shows `code` on a release at `status`.
+fn bundle_landed(track: &Track, code: &str, status: &str) -> bool {
+    track
+        .releases
+        .iter()
+        .any(|r| r.version_codes.iter().any(|c| c == code) && r.status.as_deref() == Some(status))
+}
+
+/// Upload an `.aab`, optionally its mapping file, and put it on `track_name`
+/// as a new release, in one edit. Play's SHA-256 must match the local one, and
+/// the track is read back after the commit. The version code is consumed on
+/// upload, so a failure after that point still uses one up.
+pub async fn upload_bundle(
+    client: &PlayClient,
+    package: &str,
+    track_name: &str,
+    file: &Path,
+    status: &str,
+    mapping_file: Option<&Path>,
+    ack_install_warning: bool,
+) -> Result<BundleUploaded, String> {
+    check_upload_status(status)?;
+    let (bundle, bytes) = load_bundle(file)?;
+    let mapping = match mapping_file {
+        Some(p) => Some(std::fs::read(p).map_err(|e| format!("cannot read {}: {e}", p.display()))?),
+        None => None,
+    };
+    let mapping_uploaded = mapping.is_some();
+    let local_sha = bundle.sha256;
+    let expected = local_sha.as_str();
+    let version_code = in_edit!(client, package, true, |c, id| {
+        Box::pin(async move {
+            let uploaded = c
+                .upload_bundle(package, id, bytes, ack_install_warning)
+                .await
+                .map_err(err)?;
+            if !uploaded.sha256.eq_ignore_ascii_case(expected) {
+                return Err(format!(
+                    "Play stored version code {} with SHA-256 {}, but the local file is {expected}; \
+                     nothing was committed",
+                    uploaded.version_code, uploaded.sha256
+                ));
+            }
+            if let Some(mapping) = mapping {
+                c.upload_deobfuscation(package, id, uploaded.version_code, mapping)
+                    .await
+                    .map_err(err)?;
+            }
+            let code = uploaded.version_code.to_string();
+            let track = c.get_track(package, id, track_name).await.map_err(err)?;
+            let planned = track.place_uploaded(&code, status)?;
+            c.update_track(package, id, &planned).await.map_err(err)?;
+            Ok(uploaded.version_code)
+        })
+    })?;
+    let track = read_track(client, package, track_name).await?;
+    let code = version_code.to_string();
+    let landed = bundle_landed(&track, &code, status);
+    if !landed {
+        return Err(format!(
+            "committed, but {track_name} does not show version code {version_code} as {status}"
+        ));
+    }
+    Ok(BundleUploaded {
+        version_code,
+        sha256: local_sha,
+        status: status.to_string(),
+        mapping_uploaded,
+        track,
+    })
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Promoted {
@@ -711,5 +879,64 @@ mod tests {
             let error = play_client(None).err().unwrap();
             assert!(error.contains("PLAY_SERVICE_ACCOUNT_JSON_PATH"));
         }
+    }
+
+    fn zip_with(dir: &Path, name: &str, entries: &[&str]) -> PathBuf {
+        let path = dir.join(name);
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        for entry in entries {
+            zip.start_file(*entry, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            std::io::Write::write_all(&mut zip, b"x").unwrap();
+        }
+        zip.finish().unwrap();
+        path
+    }
+
+    #[test]
+    fn load_bundle_accepts_a_bundle_and_rejects_the_rest() {
+        let dir = std::env::temp_dir().join(format!("asc-aab-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = zip_with(&dir, "ok.aab", &[BUNDLE_MANIFEST]);
+        let (file, bytes) = load_bundle(&good).unwrap();
+        assert_eq!(file.bytes as usize, bytes.len());
+        assert_eq!(file.sha256.len(), 64);
+
+        let bare = zip_with(&dir, "bare.aab", &["other.txt"]);
+        assert!(load_bundle(&bare)
+            .unwrap_err()
+            .contains("not an Android App Bundle"));
+
+        let text = dir.join("a.aab");
+        std::fs::write(&text, b"not a zip").unwrap();
+        assert!(load_bundle(&text).unwrap_err().contains("not a zip"));
+        assert!(load_bundle(&dir.join("missing.aab")).is_err());
+
+        let missing_mapping = dir.join("nope.txt");
+        assert!(plan_bundle_upload(
+            "p",
+            "internal",
+            &good,
+            "draft",
+            Some(&missing_mapping),
+            false
+        )
+        .unwrap_err()
+        .contains("mapping file"));
+        assert!(plan_bundle_upload("p", "internal", &good, "inProgress", None, false).is_err());
+        let plan = plan_bundle_upload("p", "internal", &good, "draft", None, false).unwrap();
+        assert!(plan.dry_run);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn read_back_must_show_the_code_at_the_status() {
+        let track: Track = serde_json::from_str(
+            r#"{"track":"internal","releases":[{"versionCodes":["8"],"status":"draft"}]}"#,
+        )
+        .unwrap();
+        assert!(bundle_landed(&track, "8", "draft"));
+        assert!(!bundle_landed(&track, "8", "completed"));
+        assert!(!bundle_landed(&track, "9", "draft"));
     }
 }

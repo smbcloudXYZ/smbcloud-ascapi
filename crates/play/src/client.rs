@@ -44,6 +44,41 @@ pub(crate) fn upload_path(package: &str, edit_id: &str, locale: &str, image: Ima
     )
 }
 
+/// `POST` target for `edits.bundles.upload`. `ack_install_warning` asks Play
+/// to accept a bundle it would otherwise refuse for an install-time warning.
+pub(crate) fn bundle_upload_path(
+    package: &str,
+    edit_id: &str,
+    ack_install_warning: bool,
+) -> String {
+    let ack = if ack_install_warning {
+        "&ackBundleInstallationWarning=true"
+    } else {
+        ""
+    };
+    format!(
+        "/upload/androidpublisher/v3/applications/{package}/edits/{edit_id}/bundles?uploadType=media{ack}"
+    )
+}
+
+/// `POST` target for `edits.deobfuscationfiles.upload` (a ProGuard/R8
+/// mapping file for one uploaded version code).
+pub(crate) fn deobfuscation_path(package: &str, edit_id: &str, version_code: u64) -> String {
+    format!(
+        "/upload/androidpublisher/v3/applications/{package}/edits/{edit_id}/apks/{version_code}/deobfuscationFiles/proguard?uploadType=media"
+    )
+}
+
+/// What Play reports for an uploaded bundle.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadedBundle {
+    pub version_code: u64,
+    /// Lowercase hex SHA-256 of the bundle as Play received it.
+    #[serde(default)]
+    pub sha256: String,
+}
+
 pub struct PlayClient {
     http: reqwest::Client,
     account: ServiceAccount,
@@ -249,6 +284,45 @@ impl PlayClient {
         Ok(uploaded.image)
     }
 
+    /// Upload an `.aab` into the edit. The version code is assigned by Play
+    /// from the bundle and consumed for good, even if the edit is later
+    /// discarded.
+    pub async fn upload_bundle(
+        &self,
+        package: &str,
+        edit_id: &str,
+        bytes: Vec<u8>,
+        ack_install_warning: bool,
+    ) -> Result<UploadedBundle> {
+        let path = bundle_upload_path(package, edit_id, ack_install_warning);
+        let response = self
+            .send(
+                Method::POST,
+                &path,
+                Some(("application/octet-stream", bytes)),
+            )
+            .await?;
+        Ok(response.json().await?)
+    }
+
+    /// Attach a ProGuard/R8 `mapping.txt` to an uploaded version code.
+    pub async fn upload_deobfuscation(
+        &self,
+        package: &str,
+        edit_id: &str,
+        version_code: u64,
+        bytes: Vec<u8>,
+    ) -> Result<()> {
+        let path = deobfuscation_path(package, edit_id, version_code);
+        self.send(
+            Method::POST,
+            &path,
+            Some(("application/octet-stream", bytes)),
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Remove every image in a bucket; returns how many Play reports deleted.
     pub async fn delete_all_images(
         &self,
@@ -447,5 +521,29 @@ mod tests {
             upload_path("p", "E1", "en-US", ImageType::PhoneScreenshots),
             "/upload/androidpublisher/v3/applications/p/edits/E1/listings/en-US/phoneScreenshots?uploadType=media"
         );
+    }
+
+    #[test]
+    fn bundle_upload_urls() {
+        assert_eq!(
+            bundle_upload_path("p", "E1", false),
+            "/upload/androidpublisher/v3/applications/p/edits/E1/bundles?uploadType=media"
+        );
+        assert_eq!(
+            bundle_upload_path("p", "E1", true),
+            "/upload/androidpublisher/v3/applications/p/edits/E1/bundles?uploadType=media&ackBundleInstallationWarning=true"
+        );
+        assert_eq!(
+            deobfuscation_path("p", "E1", 42),
+            "/upload/androidpublisher/v3/applications/p/edits/E1/apks/42/deobfuscationFiles/proguard?uploadType=media"
+        );
+    }
+
+    #[test]
+    fn uploaded_bundle_parses_play_response() {
+        let b: UploadedBundle =
+            serde_json::from_str(r#"{"versionCode":7,"sha256":"ab12"}"#).unwrap();
+        assert_eq!(b.version_code, 7);
+        assert_eq!(b.sha256, "ab12");
     }
 }
