@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use smbcloud_ascapi_play::{
-    png_dimensions, Image, ImageType, Listing, ListingFields, PlayClient, RolloutAction,
+    png_dimensions,
+    product::{product_body, regions_version},
+    Image, ImageType, Listing, ListingFields, Money, NewProduct, PlayClient, RolloutAction,
     ServiceAccount, Track,
 };
 
@@ -561,6 +563,95 @@ pub async fn max_version_code(client: &PlayClient, package: &str) -> Result<u64,
         .filter_map(Track::max_version_code)
         .max()
         .ok_or_else(|| format!("no track of {package} carries a version code"))
+}
+
+/// All one-time products of the app.
+pub async fn read_products(
+    client: &PlayClient,
+    package: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    client.list_products(package).await.map_err(err)
+}
+
+/// One one-time product by id.
+pub async fn read_product(
+    client: &PlayClient,
+    package: &str,
+    product_id: &str,
+) -> Result<serde_json::Value, String> {
+    client.get_product(package, product_id).await.map_err(err)
+}
+
+/// The result of creating a one-time product.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductCreated {
+    pub dry_run: bool,
+    /// The product body that is sent (dry run) or was sent.
+    pub sent: serde_json::Value,
+    /// The product as Play stores it, read back after activation. `None` on a
+    /// dry run.
+    pub stored: Option<serde_json::Value>,
+}
+
+/// Create a one-time product priced in one currency and converted to every
+/// region, then activate its purchase option. Refuses a product id that
+/// already exists, so a rerun never overwrites a price. A dry run converts
+/// prices (a read) and sends nothing.
+pub async fn create_product(
+    client: &PlayClient,
+    product: &NewProduct,
+    price: &Money,
+    dry_run: bool,
+) -> Result<ProductCreated, String> {
+    product.check().map_err(err)?;
+    let package = product.package.as_str();
+    let id = product.product_id.as_str();
+    match client.get_product(package, id).await {
+        Ok(_) => {
+            return Err(format!(
+                "{id} already exists in {package}; it was left alone"
+            ))
+        }
+        Err(smbcloud_ascapi_play::Error::Api { status: 404, .. }) => {}
+        Err(e) => return Err(err(e)),
+    }
+    let converted = client
+        .convert_region_prices(package, price)
+        .await
+        .map_err(err)?;
+    let body = product_body(product, &converted).map_err(err)?;
+    if dry_run {
+        return Ok(ProductCreated {
+            dry_run,
+            sent: body,
+            stored: None,
+        });
+    }
+    let version = regions_version(&converted).map_err(err)?;
+    client
+        .upsert_product(package, id, &body, &version)
+        .await
+        .map_err(err)?;
+    client
+        .activate_purchase_option(package, id, &product.purchase_option_id)
+        .await
+        .map_err(err)?;
+    let stored = client.get_product(package, id).await.map_err(err)?;
+    let state = stored
+        .pointer("/purchaseOptions/0/state")
+        .and_then(|v| v.as_str());
+    if state != Some("ACTIVE") {
+        return Err(format!(
+            "created {id}, but its purchase option is {} and not ACTIVE",
+            state.unwrap_or("missing")
+        ));
+    }
+    Ok(ProductCreated {
+        dry_run,
+        sent: body,
+        stored: Some(stored),
+    })
 }
 
 #[cfg(test)]

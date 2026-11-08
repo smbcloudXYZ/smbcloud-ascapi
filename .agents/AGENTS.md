@@ -314,6 +314,9 @@ asc play images list <PACKAGE> --locale en-US --type phone-screenshots
 asc play images replace <PACKAGE> --locale en-US --type phone-screenshots --file a.png --file b.png
 asc play tracks get <PACKAGE> --track internal
 asc play tracks set-notes <PACKAGE> --track internal --version-code 120 --locale en-US --notes-file n.txt
+asc play products list <PACKAGE>
+asc play products create <PACKAGE> --id app.unlock --title "Unlock" --description "..." \
+  --price 4.99 --language en-GB     # --dry-run prints the body and sends nothing
 ```
 
 Limits linted before sending: title 30, short description 80, full description
@@ -322,7 +325,12 @@ Limits linted before sending: title 30, short description 80, full description
 `images replace` deletes the bucket and uploads the files in one edit, so a
 failed upload keeps the old set. MCP exposes only the reads
 (`play_listing_list`, `play_images_list`, `play_track_get`); every write stays
-CLI-only, like review submission. The operations live in
+CLI-only, like review submission. One-time products are not inside an edit:
+`products create` converts one price to every region
+(`pricing:convertRegionPrices`), creates the product with `onetimeproducts.patch`
+(`allowMissing`), activates its purchase option and reads it back; it refuses an
+id that exists. Note the patch path is lowercase `onetimeproducts` while get,
+list and the state change use `oneTimeProducts`. The operations live in
 `crates/frontend/src/play.rs`.
 
 ## Microsoft Store (CLI)

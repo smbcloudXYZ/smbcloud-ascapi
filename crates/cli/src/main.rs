@@ -40,7 +40,10 @@ use smbcloud_ascapi_iap::in_app_purchase::{
 use smbcloud_ascapi_iap::localization::LocalizationUpdate;
 use smbcloud_ascapi_iap::prelude::*;
 use smbcloud_ascapi_msstore::ListingFields as MsStoreListingFields;
-use smbcloud_ascapi_play::{ImageType as PlayImageType, ListingFields as PlayListingFields};
+use smbcloud_ascapi_play::{
+    ImageType as PlayImageType, ListingFields as PlayListingFields, Money as PlayMoney,
+    NewProduct as PlayNewProduct,
+};
 use smbcloud_ascapi_pricing::app_price::PriceKind;
 use smbcloud_ascapi_pricing::prelude::*;
 use smbcloud_ascapi_reports::prelude::*;
@@ -109,6 +112,11 @@ enum PlayCommand {
     Tracks {
         #[command(subcommand)]
         command: PlayTracksCommand,
+    },
+    /// One-time products (in-app products): list, read, create.
+    Products {
+        #[command(subcommand)]
+        command: PlayProductsCommand,
     },
 }
 
@@ -622,6 +630,38 @@ enum PlayTracksCommand {
     /// The highest version code on any track, printed as a number. Play
     /// rejects an upload whose code is not above it.
     MaxVersionCode { package: String },
+}
+
+#[derive(Subcommand)]
+enum PlayProductsCommand {
+    /// Every one-time product of the app.
+    List { package: String },
+    /// One one-time product by id.
+    Get { package: String, product_id: String },
+    /// Create a one-time product, price it in every region from one price,
+    /// and activate it. Refuses an id that exists. With `--dry-run` it prints
+    /// the product body and sends nothing.
+    Create {
+        package: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        title: String,
+        #[arg(long)]
+        description: String,
+        /// Price in `--currency`, for example 4.99. Play converts it to every
+        /// other region, as Play Console does.
+        #[arg(long)]
+        price: String,
+        #[arg(long, default_value = "USD")]
+        currency: String,
+        /// Language of the title and description; the app's default language.
+        #[arg(long)]
+        language: String,
+        /// Purchase option id.
+        #[arg(long, default_value = "buy")]
+        option_id: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1384,6 +1424,46 @@ async fn run_play(
                     .map_err(fail)?;
                 println!("{code}");
                 Ok(())
+            }
+        },
+        PlayCommand::Products { command } => match command {
+            PlayProductsCommand::List { package } => {
+                print_json(&play::read_products(&client, &package).await.map_err(fail)?)
+            }
+            PlayProductsCommand::Get {
+                package,
+                product_id,
+            } => print_json(
+                &play::read_product(&client, &package, &product_id)
+                    .await
+                    .map_err(fail)?,
+            ),
+            PlayProductsCommand::Create {
+                package,
+                id,
+                title,
+                description,
+                price,
+                currency,
+                language,
+                option_id,
+            } => {
+                let price = PlayMoney::parse(&currency, &price).map_err(|e| fail(e.to_string()))?;
+                let product = PlayNewProduct {
+                    package,
+                    product_id: id,
+                    language,
+                    title,
+                    description,
+                    purchase_option_id: option_id,
+                };
+                let result = play::create_product(&client, &product, &price, dry_run)
+                    .await
+                    .map_err(fail)?;
+                if result.dry_run {
+                    println!("# dry run: nothing was created; body that would be sent:");
+                }
+                print_json(&result)
             }
         },
     }

@@ -24,6 +24,19 @@ pub(crate) fn edits_path(package: &str, suffix: &str) -> String {
     format!("/androidpublisher/v3/applications/{package}/edits{suffix}")
 }
 
+/// Build `/androidpublisher/v3/applications/{package}/oneTimeProducts…`.
+pub(crate) fn products_path(package: &str, suffix: &str) -> String {
+    format!("/androidpublisher/v3/applications/{package}/oneTimeProducts{suffix}")
+}
+
+/// `onetimeproducts.patch` is the one call in this resource whose path is
+/// all lowercase (`onetimeproducts`); get, list and the state changes use
+/// `oneTimeProducts`. Google's discovery document says so, and a wrong case is
+/// a 404 page from the front end.
+pub(crate) fn product_patch_path(package: &str, product_id: &str) -> String {
+    format!("/androidpublisher/v3/applications/{package}/onetimeproducts/{product_id}")
+}
+
 pub(crate) fn upload_path(package: &str, edit_id: &str, locale: &str, image: ImageType) -> String {
     format!(
         "/upload/androidpublisher/v3/applications/{package}/edits/{edit_id}/listings/{locale}/{}?uploadType=media",
@@ -257,6 +270,93 @@ impl PlayClient {
         Ok(deleted.deleted.len())
     }
 
+    /// All one-time products of the app, as Play returns them.
+    pub async fn list_products(&self, package: &str) -> Result<Vec<serde_json::Value>> {
+        // An app with no products can answer with an empty body, not `{}`.
+        let text = self
+            .send(Method::GET, &products_path(package, ""), None)
+            .await?
+            .text()
+            .await?;
+        if text.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        let page: serde_json::Value = serde_json::from_str(&text)?;
+        Ok(page
+            .get("oneTimeProducts")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    pub async fn get_product(&self, package: &str, product_id: &str) -> Result<serde_json::Value> {
+        self.json(
+            Method::GET,
+            &products_path(package, &format!("/{product_id}")),
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// `pricing:convertRegionPrices`: one price in, a price for every region out.
+    pub async fn convert_region_prices(
+        &self,
+        package: &str,
+        price: &crate::product::Money,
+    ) -> Result<serde_json::Value> {
+        let path =
+            format!("/androidpublisher/v3/applications/{package}/pricing:convertRegionPrices");
+        self.json(
+            Method::POST,
+            &path,
+            Some(&serde_json::json!({ "price": price.to_json() })),
+        )
+        .await
+    }
+
+    /// `onetimeproducts.patch` with `allowMissing`, so it creates the product
+    /// when it does not exist. `regions_version` is the one the prices were
+    /// converted against.
+    pub async fn upsert_product(
+        &self,
+        package: &str,
+        product_id: &str,
+        body: &serde_json::Value,
+        regions_version: &str,
+    ) -> Result<serde_json::Value> {
+        let path = format!(
+            "{}?allowMissing=true&updateMask=listings,purchaseOptions&regionsVersion.version={}",
+            product_patch_path(package, product_id),
+            regions_version.replace('/', "%2F"),
+        );
+        self.json(Method::PATCH, &path, Some(body)).await
+    }
+
+    /// Activate one purchase option, which is what makes the product buyable.
+    pub async fn activate_purchase_option(
+        &self,
+        package: &str,
+        product_id: &str,
+        purchase_option_id: &str,
+    ) -> Result<serde_json::Value> {
+        let path = format!(
+            "{}:batchUpdateStates",
+            products_path(package, &format!("/{product_id}/purchaseOptions"))
+        );
+        self.json(
+            Method::POST,
+            &path,
+            Some(&serde_json::json!({ "requests": [{
+                "activatePurchaseOptionRequest": {
+                    "packageName": package,
+                    "productId": product_id,
+                    "purchaseOptionId": purchase_option_id,
+                }
+            }]})),
+        )
+        .await
+    }
+
     pub async fn get_track(&self, package: &str, edit_id: &str, track: &str) -> Result<Track> {
         self.json(
             Method::GET,
@@ -310,6 +410,22 @@ mod tests {
         assert_eq!(
             edits_path("p", "/E1/listings/en-US"),
             "/androidpublisher/v3/applications/p/edits/E1/listings/en-US"
+        );
+    }
+
+    #[test]
+    fn product_urls_use_the_one_time_products_resource() {
+        assert_eq!(
+            products_path("p", "/app.unlock"),
+            "/androidpublisher/v3/applications/p/oneTimeProducts/app.unlock"
+        );
+    }
+
+    #[test]
+    fn the_product_patch_path_is_lowercase() {
+        assert_eq!(
+            product_patch_path("p", "app.unlock"),
+            "/androidpublisher/v3/applications/p/onetimeproducts/app.unlock"
         );
     }
 
