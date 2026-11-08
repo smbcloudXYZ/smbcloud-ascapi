@@ -325,6 +325,14 @@ failed upload keeps the old set. MCP exposes only the reads
 CLI-only, like review submission. The operations live in
 `crates/frontend/src/play.rs`.
 
+**New apps.** An app that has never been published is a draft app, and the API cannot take
+it public. Creating the app, the content forms, and the first production or open-testing release
+are Console steps. The API answers `Staged rollout is not permitted on draft app.` or
+`Only releases with status draft may be created on draft app.` when you try. Do not retry with other
+flags; send the release from Console. `products create` also needs an uploaded build that
+declares `com.android.vending.BILLING`. The full order is in
+[`docs/google-play-new-app.md`](../docs/google-play-new-app.md).
+
 ## Microsoft Store (CLI)
 
 `crates/msstore` is a sibling of `crates/play` and does not depend on `core`.
