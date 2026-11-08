@@ -959,7 +959,11 @@ pub async fn update_product(
     // product already has, which sends nothing.
     let probe = match (&changes.price, changes.touches_listings()) {
         (Some(price), _) => Some(price.clone()),
-        (None, true) => existing_price(&product),
+        (None, true) => Some(existing_price(&product).ok_or_else(|| {
+            "the product has no price to read a regions version from; \
+             pass --price to set one"
+                .to_string()
+        })?),
         (None, false) => None,
     };
     let converted = match &probe {
