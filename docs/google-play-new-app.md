@@ -14,7 +14,7 @@ release is published, the API takes over.
 |---|---|---|---|
 | 1 | Create the app | Console only | The androidpublisher discovery document has no create endpoint. |
 | 2 | Service account | Once per developer account | See [one-time setup](#one-time-setup-per-developer-account). One account serves every app. |
-| 3 | First `.aab` | Console | `asc` has no bundle upload yet (issue #61). Upload it as a draft internal release, then roll it out in Console. |
+| 3 | First `.aab` | Console | `asc play bundles upload` puts it on a track as a draft release. On a draft app, roll it out in Console. |
 | 4 | Version-code warning ("significantly higher than your previous") | Console | Click "Proceed anyway". A `YYYYMMDDhh` version code stays under the 2,100,000,000 cap through 2099. |
 | 5 | One-time products | `asc play products create` | Only after an uploaded build declares `com.android.vending.BILLING`. Play does not allow creating the product before that. |
 | 6 | Listing text, images, release notes | `asc play listings update`, `images replace`, `tracks set-notes` | Works on a draft app. All three committed. |
@@ -52,9 +52,24 @@ Done by hand once; every app on the account reuses it.
 
 ## After the first publish
 
-Later releases are expected to go through the API: `asc play tracks promote` and staged rollout.
-Untested for Onde Onde until Google approves its first open test. When someone runs a dry run of
-`tracks promote` against a published app and it succeeds, change "expected" to "verified" here.
+Later releases go through the API: `asc play bundles upload`, `asc play tracks promote` and
+staged rollout. On 2026-11-09, `tracks promote --dry-run` from internal to alpha, beta and
+production succeeded against the published `com.ondeinference.OndeOnde`. A real promote on that app
+is still untested.
+
+### When the app has rejected changes
+
+While a rejection is pending, Play refuses a plain commit:
+
+```
+Changes cannot be sent for review automatically. Please set the query parameter
+changesNotSentForReview to true.
+```
+
+Pass `--changes-not-sent-for-review` to `bundles upload`, `tracks promote` and `tracks set-notes`.
+The changes are committed but not sent; pressing "Send changes for review" in Publishing overview
+is a Console step. Once the changes are sent, Play says the opposite for the same flag
+(`changesNotSentForReview must not be set`), so leave it off when nothing is pending.
 
 ## Account rules that affect the first release
 

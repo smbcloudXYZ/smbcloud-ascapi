@@ -340,6 +340,7 @@ pub struct NotesSet {
     pub track: Track,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn set_track_notes(
     client: &PlayClient,
     package: &str,
@@ -347,18 +348,25 @@ pub async fn set_track_notes(
     version_code: &str,
     locale: &str,
     notes: &str,
+    changes_not_sent_for_review: bool,
     dry_run: bool,
 ) -> Result<NotesSet, String> {
-    let planned = in_edit!(client, package, !dry_run, |c, id| {
-        Box::pin(async move {
-            let mut track = c.get_track(package, id, track_name).await.map_err(err)?;
-            track.set_release_notes(version_code, locale, notes)?;
-            if !dry_run {
-                c.update_track(package, id, &track).await.map_err(err)?;
-            }
-            Ok(track)
-        })
-    })?;
+    let planned = in_edit!(
+        client,
+        package,
+        !dry_run,
+        changes_not_sent_for_review,
+        |c, id| {
+            Box::pin(async move {
+                let mut track = c.get_track(package, id, track_name).await.map_err(err)?;
+                track.set_release_notes(version_code, locale, notes)?;
+                if !dry_run {
+                    c.update_track(package, id, &track).await.map_err(err)?;
+                }
+                Ok(track)
+            })
+        }
+    )?;
     if dry_run {
         return Ok(NotesSet {
             dry_run,
