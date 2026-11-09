@@ -33,13 +33,13 @@ fn oauth_client(path: Option<&Path>) -> Result<OAuthClient, String> {
 /// Resolve the AdMob client. `path` wins; then `ADMOB_OAUTH_CLIENT_JSON_PATH`.
 /// Per call, so an unconfigured MCP server still lists its tools.
 pub fn admob_client(path: Option<&Path>) -> Result<AdmobClient, String> {
-    Ok(AdmobClient::new(oauth_client(path)?, None))
+    AdmobClient::new(oauth_client(path)?, None).map_err(err)
 }
 
 /// Run the browser sign-in and cache the refresh token.
 pub async fn login(path: Option<&Path>) -> Result<String, String> {
     let client = oauth_client(path)?;
-    let token_path = StoredToken::default_path();
+    let token_path = StoredToken::default_path().map_err(err)?;
     auth::login(&client, &token_path).await.map_err(err)?;
     Ok(format!(
         "signed in; token cached at {}",

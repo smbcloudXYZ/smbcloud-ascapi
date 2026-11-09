@@ -140,12 +140,21 @@ impl std::fmt::Debug for StoredToken {
 }
 
 impl StoredToken {
-    /// `~/.config/asc/admob-token.json`.
-    pub fn default_path() -> PathBuf {
+    /// `~/.config/asc/admob-token.json`. Falls back to `USERPROFILE` where
+    /// `HOME` is unset (Windows). Errors rather than caching under a
+    /// relative path that depends on the working directory.
+    pub fn default_path() -> Result<PathBuf> {
         let home = std::env::var_os("HOME")
+            .filter(|h| !h.is_empty())
+            .or_else(|| std::env::var_os("USERPROFILE").filter(|h| !h.is_empty()))
             .map(PathBuf::from)
-            .unwrap_or_default();
-        home.join(".config").join("asc").join("admob-token.json")
+            .ok_or_else(|| {
+                Error::Authorization(
+                    "cannot locate the home directory: neither HOME nor USERPROFILE is set"
+                        .to_string(),
+                )
+            })?;
+        Ok(home.join(".config").join("asc").join("admob-token.json"))
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
@@ -214,7 +223,7 @@ pub fn authorization_url(
     redirect_uri: &str,
     pkce: &Pkce,
     state: &str,
-) -> String {
+) -> Result<String> {
     reqwest::Url::parse_with_params(
         &client.auth_uri,
         &[
@@ -231,7 +240,7 @@ pub fn authorization_url(
         ],
     )
     .map(|url| url.to_string())
-    .unwrap_or_default()
+    .map_err(|_| Error::ClientInvalid)
 }
 
 /// Pull the authorization code out of the loopback request line
@@ -289,7 +298,7 @@ pub async fn login(client: &OAuthClient, token_path: &Path) -> Result<()> {
     let redirect_uri = format!("http://127.0.0.1:{port}");
     let pkce = Pkce::generate();
     let state = random_string(32);
-    let url = authorization_url(client, &redirect_uri, &pkce, &state);
+    let url = authorization_url(client, &redirect_uri, &pkce, &state)?;
 
     eprintln!("Opening the browser to sign in to AdMob. If it does not open, visit:\n{url}");
     open_browser(&url);
@@ -299,12 +308,22 @@ pub async fn login(client: &OAuthClient, token_path: &Path) -> Result<()> {
             .accept()
             .await
             .map_err(|e| Error::Authorization(e.to_string()))?;
-        let mut buf = vec![0u8; 8192];
-        let n = socket
-            .read(&mut buf)
-            .await
-            .map_err(|e| Error::Authorization(e.to_string()))?;
-        let request = String::from_utf8_lossy(&buf[..n]).into_owned();
+        // The request line may arrive split across segments: read until it
+        // ends (or the headers do), with a cap so a stray client cannot
+        // grow the buffer without bound.
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 1024];
+        while !buf.contains(&b'\n') && buf.len() < 16 * 1024 {
+            let n = socket
+                .read(&mut chunk)
+                .await
+                .map_err(|e| Error::Authorization(e.to_string()))?;
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        let request = String::from_utf8_lossy(&buf).into_owned();
         let line = request.lines().next().unwrap_or_default();
         let parsed = parse_callback(line, &state);
         let body = if parsed.is_ok() {
@@ -479,13 +498,23 @@ mod tests {
     fn authorization_url_carries_pkce_scopes_and_offline_access() {
         let client = OAuthClient::from_json(CLIENT_JSON).unwrap();
         let pkce = Pkce::from_verifier("v".repeat(43));
-        let url = authorization_url(&client, "http://127.0.0.1:5000", &pkce, "st");
+        let url = authorization_url(&client, "http://127.0.0.1:5000", &pkce, "st").unwrap();
         assert!(url.starts_with("https://accounts.google.com/o/oauth2/v2/auth?"));
         assert!(url.contains("code_challenge_method=S256"));
         assert!(url.contains("access_type=offline"));
         assert!(url.contains("admob.monetization"));
         assert!(url.contains("state=st"));
         assert!(!url.contains("SECRET"));
+    }
+
+    #[test]
+    fn an_unparseable_auth_uri_is_an_error_not_an_empty_url() {
+        let client = OAuthClient::from_json(
+            r#"{"installed":{"client_id":"a","client_secret":"b","auth_uri":"not a url"}}"#,
+        )
+        .unwrap();
+        let pkce = Pkce::from_verifier("v".repeat(43));
+        assert!(authorization_url(&client, "http://127.0.0.1:1", &pkce, "s").is_err());
     }
 
     #[test]

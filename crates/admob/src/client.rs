@@ -48,12 +48,16 @@ pub struct AdmobClient {
 
 impl AdmobClient {
     /// `token_path` defaults to `~/.config/asc/admob-token.json`.
-    pub fn new(oauth: OAuthClient, token_path: Option<PathBuf>) -> Self {
-        Self {
+    pub fn new(oauth: OAuthClient, token_path: Option<PathBuf>) -> Result<Self> {
+        let token_path = match token_path {
+            Some(path) => path,
+            None => StoredToken::default_path()?,
+        };
+        Ok(Self {
             http: reqwest::Client::new(),
-            auth: Authenticator::new(oauth, token_path.unwrap_or_else(StoredToken::default_path)),
+            auth: Authenticator::new(oauth, token_path),
             root: API_ROOT.to_string(),
-        }
+        })
     }
 
     async fn request<T: DeserializeOwned>(
@@ -99,7 +103,14 @@ impl AdmobClient {
             };
             let value: serde_json::Value = self.request(Method::GET, &target, None::<&()>).await?;
             let mut shaped = serde_json::Map::new();
-            shaped.insert("items".into(), value.get(key).cloned().unwrap_or_default());
+            // proto3 JSON omits empty repeated fields; an absent key is an empty
+            // list, and `Value::Null` would not deserialize as a `Vec`.
+            let items = value
+                .get(key)
+                .filter(|v| !v.is_null())
+                .cloned()
+                .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+            shaped.insert("items".into(), items);
             if let Some(next) = value.get("nextPageToken") {
                 shaped.insert("nextPageToken".into(), next.clone());
             }
