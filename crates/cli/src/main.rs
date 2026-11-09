@@ -41,8 +41,8 @@ use smbcloud_ascapi_iap::localization::LocalizationUpdate;
 use smbcloud_ascapi_iap::prelude::*;
 use smbcloud_ascapi_msstore::ListingFields as MsStoreListingFields;
 use smbcloud_ascapi_play::{
-    ImageType as PlayImageType, ListingFields as PlayListingFields, Money as PlayMoney,
-    NewProduct as PlayNewProduct,
+    Details as PlayDetails, ImageType as PlayImageType, ListingFields as PlayListingFields,
+    Money as PlayMoney, NewProduct as PlayNewProduct,
 };
 use smbcloud_ascapi_pricing::app_price::PriceKind;
 use smbcloud_ascapi_pricing::prelude::*;
@@ -97,7 +97,32 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+enum PlayDetailsCommand {
+    /// Contact website, email, phone and default language.
+    Get { package: String },
+    /// Patch the details, then read them back from a fresh edit. Honors
+    /// --dry-run.
+    Update {
+        package: String,
+        #[arg(long)]
+        contact_website: Option<String>,
+        #[arg(long)]
+        contact_email: Option<String>,
+        #[arg(long)]
+        contact_phone: Option<String>,
+        /// BCP-47 tag, for example en-US.
+        #[arg(long)]
+        default_language: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum PlayCommand {
+    /// App details: contact website, email, phone, default language.
+    Details {
+        #[command(subcommand)]
+        command: PlayDetailsCommand,
+    },
     /// Localized store listing text (title, short and full description).
     Listings {
         #[command(subcommand)]
@@ -1370,6 +1395,32 @@ async fn run_play(
     let client = play::play_client(service_account).map_err(|e| anyhow::anyhow!(e))?;
     let fail = |e: String| anyhow::anyhow!(e);
     match command {
+        PlayCommand::Details { command } => match command {
+            PlayDetailsCommand::Get { package } => {
+                print_json(&play::read_details(&client, &package).await.map_err(fail)?)
+            }
+            PlayDetailsCommand::Update {
+                package,
+                contact_website,
+                contact_email,
+                contact_phone,
+                default_language,
+            } => {
+                let details = PlayDetails {
+                    contact_website,
+                    contact_email,
+                    contact_phone,
+                    default_language,
+                };
+                let result = play::update_details(&client, &package, details, dry_run)
+                    .await
+                    .map_err(fail)?;
+                if result.dry_run {
+                    println!("# dry run: nothing was committed; body that would be sent:");
+                }
+                print_json(&result)
+            }
+        },
         PlayCommand::Listings { command } => match command {
             PlayListingsCommand::List { package } => {
                 print_json(&play::read_listings(&client, &package).await.map_err(fail)?)

@@ -9,6 +9,7 @@
 
 pub mod auth;
 pub mod client;
+pub mod details;
 pub mod error;
 pub mod image;
 pub mod listing;
@@ -17,6 +18,7 @@ pub mod track;
 
 pub use auth::ServiceAccount;
 pub use client::{Edit, PlayClient, UploadedBundle};
+pub use details::Details;
 pub use error::{Error, Result};
 pub use image::{png_dimensions, Image, ImageType};
 pub use listing::{
