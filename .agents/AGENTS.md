@@ -333,7 +333,9 @@ CLI-only, like review submission. `bundles upload` puts an `.aab` on a track in
 one edit: it uploads, compares Play's SHA-256 with the local file's, optionally
 attaches a ProGuard `mapping.txt`, replaces a `draft` or `inProgress` release on
 the track (`completed` ones stay), commits and reads the track back. It prints
-the `versionCode` Play assigned, for `tracks set-notes` or `tracks promote`. The
+the `versionCode` Play assigned, for `tracks set-notes` or `tracks promote`. `bundles upload`, `tracks promote` and `tracks set-notes` take
+`--changes-not-sent-for-review` for an app with rejected changes pending; Play rejects the flag
+when nothing is pending, so it is opt-in. The
 default status is `draft`. `--dry-run` is local only (the file is a zip with
 `base/manifest/AndroidManifest.xml`, the mapping file exists) and needs no
 credentials; it cannot report the version code. A real upload uses up its

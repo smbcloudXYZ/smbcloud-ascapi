@@ -580,6 +580,10 @@ enum PlayTracksCommand {
         /// Read the notes from a UTF-8 file; one trailing newline is dropped.
         #[arg(long)]
         notes_file: Option<PathBuf>,
+        /// Commit with changesNotSentForReview, for apps that have rejected
+        /// changes pending.
+        #[arg(long)]
+        changes_not_sent_for_review: bool,
     },
     /// Promote a version code from one track to another, for example
     /// internal to production, in one edit. A staged rollout is the default
@@ -1447,6 +1451,7 @@ async fn run_play(
                 locale,
                 notes,
                 notes_file,
+                changes_not_sent_for_review,
             } => {
                 let notes = text_arg(notes, notes_file, "--notes-file")?
                     .context("--notes or --notes-file is required")?;
@@ -1457,6 +1462,7 @@ async fn run_play(
                     &version_code,
                     &locale,
                     &notes,
+                    changes_not_sent_for_review,
                     dry_run,
                 )
                 .await
