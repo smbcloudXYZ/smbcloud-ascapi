@@ -63,6 +63,8 @@ ascapi_mcp_tools!(
     "play_listing_list",
     "play_images_list",
     "play_track_get",
+    "admob_apps_list",
+    "admob_adunits_list",
     "appgallery_app_info_get",
     "appgallery_package_list",
     "appgallery_package_status",
@@ -117,7 +119,7 @@ mod tests {
     /// The canonical tool names. Adding or renaming one is a
     /// public-contract change, and this list is what makes that
     /// deliberate rather than accidental.
-    const CANONICAL_TOOL_NAMES: [&str; 40] = [
+    const CANONICAL_TOOL_NAMES: [&str; 42] = [
         "app_list",
         "app_get",
         "app_update",
@@ -152,6 +154,8 @@ mod tests {
         "play_listing_list",
         "play_images_list",
         "play_track_get",
+        "admob_apps_list",
+        "admob_adunits_list",
         "appgallery_app_info_get",
         "appgallery_package_list",
         "appgallery_package_status",

@@ -97,6 +97,58 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+enum AdmobCommand {
+    /// Sign in with a browser once and cache the refresh token at
+    /// ~/.config/asc/admob-token.json.
+    Login,
+    /// AdMob accounts the signed-in Google user can see.
+    Accounts,
+    /// Apps in the account.
+    Apps {
+        #[command(subcommand)]
+        command: AdmobAppsCommand,
+    },
+    /// Ad units: list, or create a rewarded unit (limited access).
+    Adunits {
+        #[command(subcommand)]
+        command: AdmobAdunitsCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum AdmobAppsCommand {
+    /// List the account's apps with their `ca-app-pub-…~…` app IDs.
+    List,
+}
+
+#[derive(Subcommand)]
+enum AdmobAdunitsCommand {
+    /// List ad units, optionally for one app.
+    List {
+        /// Only units of this app ID (`ca-app-pub-…~…`).
+        #[arg(long)]
+        app: Option<String>,
+    },
+    /// Create a rewarded ad unit. adUnits.create is limited access: without
+    /// a grant from Google it answers 403, and the unit has to be created in
+    /// the AdMob console. Honors --dry-run.
+    Create {
+        /// App ID (`ca-app-pub-…~…`), from `asc admob apps list`.
+        #[arg(long)]
+        app: String,
+        #[arg(long)]
+        name: String,
+        /// Only `rewarded` is supported.
+        #[arg(long, default_value = "rewarded")]
+        format: String,
+        #[arg(long)]
+        reward_amount: u64,
+        #[arg(long)]
+        reward_item: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum PlayDetailsCommand {
     /// Contact website, email, phone and default language.
     Get { package: String },
@@ -887,6 +939,19 @@ enum Command {
         #[command(subcommand)]
         command: AppGalleryCommand,
     },
+    /// AdMob accounts, apps and ad units. Uses a Google user OAuth sign-in
+    /// (AdMob has no service accounts), not the App Store Connect key.
+    Admob {
+        /// Path to a Desktop-app OAuth client JSON. Falls back to
+        /// `ADMOB_OAUTH_CLIENT_JSON_PATH`.
+        #[arg(long, global = true)]
+        admob_oauth_client: Option<PathBuf>,
+        /// AdMob account (`pub-…`). Defaults to the only account the user has.
+        #[arg(long, global = true)]
+        account: Option<String>,
+        #[command(subcommand)]
+        command: AdmobCommand,
+    },
     /// Google Play store listings: text, images, and release notes. Uses a
     /// Play service account, not the App Store Connect key.
     Play {
@@ -1352,6 +1417,69 @@ async fn run_msstore(
                     println!("# dry run: nothing was written; changes that would be made:");
                 }
                 print_json(&result)
+            }
+        },
+    }
+}
+
+async fn run_admob(
+    oauth_client: Option<&std::path::Path>,
+    account: Option<&str>,
+    command: AdmobCommand,
+    dry_run: bool,
+) -> Result<()> {
+    use smbcloud_ascapi_frontend::admob;
+    let fail = |e: String| anyhow::anyhow!(e);
+    // Sign-in and the dry run need no API call, so no cached token either.
+    if let AdmobCommand::Login = command {
+        println!("{}", admob::login(oauth_client).await.map_err(fail)?);
+        return Ok(());
+    }
+    if let AdmobCommand::Adunits {
+        command:
+            AdmobAdunitsCommand::Create {
+                app,
+                name,
+                format,
+                reward_amount,
+                reward_item,
+            },
+    } = &command
+    {
+        let body =
+            admob::plan_create(app, name, format, *reward_amount, reward_item).map_err(fail)?;
+        if dry_run {
+            println!("# dry run: nothing was sent; body that would be POSTed to adUnits.create:");
+            return print_json(&body);
+        }
+    }
+    let client = admob::admob_client(oauth_client).map_err(fail)?;
+    match command {
+        AdmobCommand::Login => unreachable!("handled above"),
+        AdmobCommand::Accounts => print_json(&admob::list_accounts(&client).await.map_err(fail)?),
+        AdmobCommand::Apps {
+            command: AdmobAppsCommand::List,
+        } => print_json(&admob::list_apps(&client, account).await.map_err(fail)?),
+        AdmobCommand::Adunits { command } => match command {
+            AdmobAdunitsCommand::List { app } => print_json(
+                &admob::list_ad_units(&client, account, app.as_deref())
+                    .await
+                    .map_err(fail)?,
+            ),
+            AdmobAdunitsCommand::Create {
+                app,
+                name,
+                format,
+                reward_amount,
+                reward_item,
+            } => {
+                let body = admob::plan_create(&app, &name, &format, reward_amount, &reward_item)
+                    .map_err(fail)?;
+                print_json(
+                    &admob::create_ad_unit(&client, account, &body)
+                        .await
+                        .map_err(fail)?,
+                )
             }
         },
     }
@@ -3042,6 +3170,21 @@ async fn main() -> Result<()> {
         .await;
     }
 
+    if let Some(Command::Admob {
+        admob_oauth_client,
+        account,
+        command,
+    }) = cli.command
+    {
+        return run_admob(
+            admob_oauth_client.as_deref(),
+            account.as_deref(),
+            command,
+            cli.dry_run,
+        )
+        .await;
+    }
+
     if let Some(Command::Play {
         play_service_account,
         command,
@@ -3089,7 +3232,10 @@ async fn main() -> Result<()> {
     };
 
     match command {
-        Command::AppGallery { .. } | Command::Msstore { .. } | Command::Play { .. } => {
+        Command::AppGallery { .. }
+        | Command::Msstore { .. }
+        | Command::Play { .. }
+        | Command::Admob { .. } => {
             unreachable!("handled before App Store Connect credentials")
         }
         Command::Apps { command } => run_apps(&client, &altool_auth, command, cli.dry_run).await,

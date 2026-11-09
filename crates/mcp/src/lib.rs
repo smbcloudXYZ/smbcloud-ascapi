@@ -73,6 +73,8 @@ macro_rules! ascapi_mcp_tools {
         $play_listing_list_name:literal,
         $play_images_list_name:literal,
         $play_track_get_name:literal,
+        $admob_apps_list_name:literal,
+        $admob_adunits_list_name:literal,
         $appgallery_app_info_get_name:literal,
         $appgallery_package_list_name:literal,
         $appgallery_package_status_name:literal,
@@ -1043,6 +1045,54 @@ macro_rules! ascapi_mcp_tools {
                 let value = play::read_track(&client, &request.package_name, &request.track)
                     .await
                     .map_err(|error| ::rmcp::model::ErrorData::internal_error(error, None))?;
+                Ok(::rmcp::model::CallToolResult::success(vec![
+                    ::rmcp::model::ContentBlock::json(&value)?,
+                ]))
+            }
+
+            #[::rmcp::tool(
+                name = $admob_apps_list_name,
+                title = "List AdMob apps",
+                annotations(title = "List AdMob apps", read_only_hint = true, idempotent_hint = true),
+                description = "Purpose: list the apps of an AdMob account with their ca-app-pub app IDs. When to use vs siblings: use this to find an app ID; admob_adunits_list lists the ad units. Behavior: reads accounts.apps.list, nothing changes. Prerequisites: a Desktop-app OAuth client JSON at ADMOB_OAUTH_CLIENT_JSON_PATH and a cached sign-in made once with the asc admob login command. Failure modes: missing client or sign-in returns an invalid-request error naming what is absent; AdMob errors are returned verbatim with their status. Limitations: read-only; creating ad units is available only through the asc admob adunits create command."
+            )]
+            async fn admob_apps_list(
+                &self,
+                parameters: ::rmcp::handler::server::wrapper::Parameters<$crate::AdmobAppsListRequest>,
+            ) -> ::std::result::Result<::rmcp::model::CallToolResult, ::rmcp::model::ErrorData> {
+                use ::smbcloud_ascapi_frontend::admob;
+                let client = admob::admob_client(None)
+                    .map_err(|error| ::rmcp::model::ErrorData::invalid_request(error, None))?;
+                let request = parameters.0;
+                let value = admob::list_apps(&client, request.account.as_deref())
+                    .await
+                    .map_err(|error| ::rmcp::model::ErrorData::internal_error(error, None))?;
+                Ok(::rmcp::model::CallToolResult::success(vec![
+                    ::rmcp::model::ContentBlock::json(&value)?,
+                ]))
+            }
+
+            #[::rmcp::tool(
+                name = $admob_adunits_list_name,
+                title = "List AdMob ad units",
+                annotations(title = "List AdMob ad units", read_only_hint = true, idempotent_hint = true),
+                description = "Purpose: list the ad units of an AdMob account (ID, format, app, reward settings), optionally for one app. When to use vs siblings: use this to read a unit's ca-app-pub ad unit ID after creating it in the console; admob_apps_list finds app IDs. Behavior: reads accounts.adUnits.list, nothing changes. Prerequisites: a Desktop-app OAuth client JSON at ADMOB_OAUTH_CLIENT_JSON_PATH and a cached sign-in made once with the asc admob login command. Failure modes: missing client or sign-in returns an invalid-request error naming what is absent; AdMob errors are returned verbatim with their status. Limitations: read-only; creating ad units is available only through the asc admob adunits create command."
+            )]
+            async fn admob_adunits_list(
+                &self,
+                parameters: ::rmcp::handler::server::wrapper::Parameters<$crate::AdmobAdunitsListRequest>,
+            ) -> ::std::result::Result<::rmcp::model::CallToolResult, ::rmcp::model::ErrorData> {
+                use ::smbcloud_ascapi_frontend::admob;
+                let client = admob::admob_client(None)
+                    .map_err(|error| ::rmcp::model::ErrorData::invalid_request(error, None))?;
+                let request = parameters.0;
+                let value = admob::list_ad_units(
+                    &client,
+                    request.account.as_deref(),
+                    request.app.as_deref(),
+                )
+                .await
+                .map_err(|error| ::rmcp::model::ErrorData::internal_error(error, None))?;
                 Ok(::rmcp::model::CallToolResult::success(vec![
                     ::rmcp::model::ContentBlock::json(&value)?,
                 ]))

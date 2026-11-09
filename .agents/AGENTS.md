@@ -165,7 +165,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace --locked
-cargo check -p smbcloud-ascapi-core --locked   # also -aso, -play, -msstore, -signing: each lower crate must build alone
+cargo check -p smbcloud-ascapi-core --locked   # also -aso, -play, -admob, -msstore, -signing: each lower crate must build alone
 ```
 
 Single test: `cargo test -p smbcloud-ascapi-aso build::tests::<name>`.
@@ -365,6 +365,26 @@ are Console steps. The API answers `Staged rollout is not permitted on draft app
 flags; send the release from Console. `products create` also needs an uploaded build that
 declares `com.android.vending.BILLING`. The full order is in
 [`docs/google-play-new-app.md`](../docs/google-play-new-app.md).
+
+## AdMob (CLI)
+
+`crates/admob` is a sibling of `crates/play` and does not depend on `core`. AdMob takes user OAuth
+only: `auth.rs` runs the installed-app flow (PKCE, loopback redirect) and caches a refresh token at
+`~/.config/asc/admob-token.json` (0600). The client JSON comes from `--admob-oauth-client` or
+`ADMOB_OAUTH_CLIENT_JSON_PATH`. `Debug` impls redact secrets; keep it that way.
+
+```bash
+asc admob login
+asc admob accounts
+asc admob apps list
+asc admob adunits list [--app ca-app-pub-...~...]
+asc admob adunits create --app ... --name ... --format rewarded --reward-amount 50 --reward-item Semitones
+```
+
+`adunits create` (v1beta) is limited access and answers 403 without a grant; the client maps that to a
+clear error. `create` reads the units back to confirm. MCP exposes only `admob_apps_list` and
+`admob_adunits_list`. The SSV callback URL and GDPR messages are console-only. Setup and limits:
+[`docs/admob.md`](../docs/admob.md). Shared code: `crates/frontend/src/admob.rs`.
 
 ## Microsoft Store (CLI)
 
