@@ -1804,6 +1804,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891"
 
 [[package]]
+name = "smbcloud-ascapi-admob"
+version = "0.3.0"
+dependencies = [
+ "base64 0.22.1",
+ "rand 0.8.8",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "smbcloud-ascapi-appgallery"
 version = "0.3.0"
 dependencies = [
@@ -1840,6 +1854,7 @@ dependencies = [
  "flate2",
  "serde",
  "serde_json",
+ "smbcloud-ascapi-admob",
  "smbcloud-ascapi-appgallery",
  "smbcloud-ascapi-aso",
  "smbcloud-ascapi-core",
@@ -1874,6 +1889,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "smbcloud-ascapi-admob",
  "smbcloud-ascapi-appgallery",
  "smbcloud-ascapi-aso",
  "smbcloud-ascapi-core",
