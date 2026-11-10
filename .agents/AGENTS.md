@@ -307,6 +307,8 @@ Everything in Play happens inside an *edit*. Each command opens one, applies,
 and deletes the edit. Writes read back after commit and fail on any difference.
 
 ```sh
+asc play details get <PACKAGE>
+asc play details update <PACKAGE> [--contact-website U] [--contact-email E] [--contact-phone P] [--default-language L]
 asc play listings list <PACKAGE>
 asc play listings update <PACKAGE> --locale en-US \
   --title-file t.txt --short-description-file s.txt --full-description-file d.txt

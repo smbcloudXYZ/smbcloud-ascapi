@@ -3,6 +3,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{ServiceAccount, TokenCache};
+use crate::details::Details;
 use crate::error::{Error, Result};
 use crate::image::{Image, ImageType};
 use crate::listing::{Listing, ListingFields};
@@ -216,6 +217,30 @@ impl PlayClient {
     pub async fn delete_edit(&self, package: &str, edit_id: &str) -> Result<()> {
         self.no_body(Method::DELETE, &edits_path(package, &format!("/{edit_id}")))
             .await
+    }
+
+    pub async fn get_details(&self, package: &str, edit_id: &str) -> Result<Details> {
+        self.json(
+            Method::GET,
+            &edits_path(package, &format!("/{edit_id}/details")),
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// `details.patch`: only the fields set in `details` change.
+    pub async fn patch_details(
+        &self,
+        package: &str,
+        edit_id: &str,
+        details: &Details,
+    ) -> Result<Details> {
+        self.json(
+            Method::PATCH,
+            &edits_path(package, &format!("/{edit_id}/details")),
+            Some(details),
+        )
+        .await
     }
 
     pub async fn list_listings(&self, package: &str, edit_id: &str) -> Result<Vec<Listing>> {

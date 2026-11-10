@@ -15,8 +15,8 @@ use smbcloud_ascapi_play::{
         check_applied, existing_price, is_billing_refusal, pick_purchase_option, product_body,
         purchase_option_state, regions_version, BILLING_HINT,
     },
-    Image, ImageType, Listing, ListingFields, Money, NewProduct, PlayClient, ProductChanges,
-    RolloutAction, ServiceAccount, Track,
+    Details, Image, ImageType, Listing, ListingFields, Money, NewProduct, PlayClient,
+    ProductChanges, RolloutAction, ServiceAccount, Track,
 };
 
 /// Resolve the Play client. `path` wins; then `PLAY_SERVICE_ACCOUNT_JSON_PATH`;
@@ -130,6 +130,63 @@ pub async fn read_images(
 pub async fn read_track(client: &PlayClient, package: &str, track: &str) -> Result<Track, String> {
     in_edit!(client, package, false, |c, id| {
         Box::pin(async move { c.get_track(package, id, track).await.map_err(err) })
+    })
+}
+
+pub async fn read_details(client: &PlayClient, package: &str) -> Result<Details, String> {
+    in_edit!(client, package, false, |c, id| {
+        Box::pin(async move { c.get_details(package, id).await.map_err(err) })
+    })
+}
+
+/// The result of a details update.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetailsUpdate {
+    pub dry_run: bool,
+    pub sent: Details,
+    pub before: Details,
+    /// Read back from a fresh edit after commit. `None` on a dry run.
+    pub after: Option<Details>,
+}
+
+pub async fn update_details(
+    client: &PlayClient,
+    package: &str,
+    details: Details,
+    dry_run: bool,
+) -> Result<DetailsUpdate, String> {
+    if details.is_empty() {
+        return Err("nothing to update: pass at least one details field".to_string());
+    }
+    let sent = details.clone();
+    let before = in_edit!(client, package, !dry_run, |c, id| {
+        Box::pin(async move {
+            let before = c.get_details(package, id).await.map_err(err)?;
+            if !dry_run {
+                c.patch_details(package, id, &details).await.map_err(err)?;
+            }
+            Ok(before)
+        })
+    })?;
+    let after = if dry_run {
+        None
+    } else {
+        let stored = read_details(client, package).await?;
+        let wrong = sent.diff(&stored);
+        if !wrong.is_empty() {
+            return Err(format!(
+                "committed, but the read-back differs in: {}",
+                wrong.join(", ")
+            ));
+        }
+        Some(stored)
+    };
+    Ok(DetailsUpdate {
+        dry_run,
+        sent,
+        before,
+        after,
     })
 }
 
