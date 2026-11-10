@@ -64,7 +64,7 @@ pub async fn resolve_account(
         [only] => Ok(only.name.clone()),
         [] => Err("this Google user has no AdMob account".to_string()),
         many => Err(format!(
-            "several AdMob accounts ({}); pass --account",
+            "several AdMob accounts ({}); specify the account",
             many.iter()
                 .map(|a| a.name.as_str())
                 .collect::<Vec<_>>()
@@ -117,11 +117,18 @@ pub fn plan_create(
 #[derive(Debug, Serialize)]
 pub struct CreatedAdUnit {
     pub created: AdUnit,
-    /// Set after reading the units back with `adunits list`.
+    /// Whether the unit showed up when the list was read back.
     pub confirmed_in_list: bool,
+    /// Set when the read-back failed or did not show the unit. The create
+    /// itself succeeded, so this is never an error: a caller that retried on
+    /// failure would create a duplicate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
-/// Create the unit, then read the list back and confirm it is there.
+/// Create the unit, then read the list back to confirm it is there. Only a
+/// failed create is an error; a failed or inconclusive read-back is reported
+/// in the result.
 pub async fn create_ad_unit(
     client: &AdmobClient,
     account: Option<&str>,
@@ -129,17 +136,27 @@ pub async fn create_ad_unit(
 ) -> Result<CreatedAdUnit, String> {
     let account = resolve_account(client, account).await?;
     let created = client.create_ad_unit(&account, body).await.map_err(err)?;
-    let listed = client.list_ad_units(&account).await.map_err(err)?;
-    let confirmed_in_list = listed.iter().any(|u| u.name == created.name);
-    if !confirmed_in_list {
-        return Err(format!(
-            "AdMob accepted the create ({}) but the unit is not in the list yet; run `asc admob adunits list`",
-            created.name
-        ));
-    }
+    let (confirmed_in_list, warning) = match client.list_ad_units(&account).await {
+        Ok(listed) if listed.iter().any(|u| u.name == created.name) => (true, None),
+        Ok(_) => (
+            false,
+            Some(format!(
+                "created {}, but it is not in the list yet; run `asc admob adunits list` before retrying",
+                created.name
+            )),
+        ),
+        Err(e) => (
+            false,
+            Some(format!(
+                "created {}, but reading the list back failed ({e}); run `asc admob adunits list` before retrying",
+                created.name
+            )),
+        ),
+    };
     Ok(CreatedAdUnit {
         created,
         confirmed_in_list,
+        warning,
     })
 }
 

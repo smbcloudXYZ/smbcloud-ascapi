@@ -39,6 +39,12 @@ pub enum Error {
     #[error("Google OAuth token exchange returned {status}: {detail}")]
     Token { status: u16, detail: String },
 
+    #[error(
+        "Google rejected the cached sign-in (invalid_grant: revoked or expired). Delete {path} and \
+         run `asc admob login` again"
+    )]
+    SignInExpired { path: String },
+
     #[error("AdMob API returned {status}: {detail}")]
     Api { status: u16, detail: String },
 

@@ -36,7 +36,7 @@ asc admob adunits create --app ca-app-pub-...~... --name "Karaoke rewarded" \
 
 `--account` defaults to the only account the user has. `--dry-run` on `create`
 prints the request body and needs neither credentials nor a sign-in. After a
-real create, `asc` reads the units back and fails if the new one is missing.
+real create, `asc` reads the units back to confirm. If that read fails or the unit is not listed yet, the create still counts as done and the result carries a `warning`, so check `adunits list` before retrying.
 
 The MCP server exposes `admob_apps_list` and `admob_adunits_list`, both
 read-only. They never open a browser; without a cached sign-in they say to run

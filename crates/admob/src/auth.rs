@@ -370,6 +370,17 @@ pub async fn login(client: &OAuthClient, token_path: &Path) -> Result<()> {
     StoredToken { refresh_token }.save(token_path)
 }
 
+/// A revoked or long-expired refresh token: Google answers 400 with
+/// `"error": "invalid_grant"`.
+pub(crate) fn is_invalid_grant(status: u16, detail: &str) -> bool {
+    status == 400
+        && serde_json::from_str::<serde_json::Value>(detail)
+            .ok()
+            .and_then(|v| v.get("error").and_then(|e| e.as_str().map(str::to_owned)))
+            .as_deref()
+            == Some("invalid_grant")
+}
+
 /// Turns the cached refresh token into short-lived access tokens.
 pub(crate) struct Authenticator {
     client: OAuthClient,
@@ -406,9 +417,15 @@ impl Authenticator {
             .await?;
         let status = response.status();
         if !status.is_success() {
+            let detail = response.text().await.unwrap_or_default();
+            if is_invalid_grant(status.as_u16(), &detail) {
+                return Err(Error::SignInExpired {
+                    path: self.token_path.display().to_string(),
+                });
+            }
             return Err(Error::Token {
                 status: status.as_u16(),
-                detail: response.text().await.unwrap_or_default(),
+                detail,
             });
         }
         let body: TokenResponse = response.json().await?;
@@ -515,6 +532,16 @@ mod tests {
         .unwrap();
         let pkce = Pkce::from_verifier("v".repeat(43));
         assert!(authorization_url(&client, "http://127.0.0.1:1", &pkce, "s").is_err());
+    }
+
+    #[test]
+    fn invalid_grant_is_recognized_only_for_a_400_with_that_error() {
+        let body =
+            r#"{"error":"invalid_grant","error_description":"Token has been expired or revoked."}"#;
+        assert!(is_invalid_grant(400, body));
+        assert!(!is_invalid_grant(500, body));
+        assert!(!is_invalid_grant(400, r#"{"error":"invalid_client"}"#));
+        assert!(!is_invalid_grant(400, "not json"));
     }
 
     #[test]
