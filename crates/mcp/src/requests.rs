@@ -363,3 +363,9 @@ pub struct MsStoreListingGetRequest {
     /// Listing locale, e.g. en-us.
     pub locale: String,
 }
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct AmazonAppRequest {
+    /// Amazon Appstore app id, e.g. amzn1.devportal.mobileapp.<hex>.
+    pub app_id: String,
+}

@@ -1818,6 +1818,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "smbcloud-ascapi-amazon"
+version = "0.3.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "smbcloud-ascapi-appgallery"
 version = "0.3.0"
 dependencies = [
@@ -1890,6 +1901,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "smbcloud-ascapi-admob",
+ "smbcloud-ascapi-amazon",
  "smbcloud-ascapi-appgallery",
  "smbcloud-ascapi-aso",
  "smbcloud-ascapi-core",
