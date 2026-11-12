@@ -21,6 +21,7 @@
 //!   it wrote instead.
 
 pub mod admob;
+pub mod amazon;
 pub mod appgallery;
 pub mod attach_build;
 pub mod await_processing;

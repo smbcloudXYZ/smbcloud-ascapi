@@ -821,6 +821,70 @@ enum PlayProductsCommand {
 }
 
 #[derive(Subcommand)]
+enum AmazonCommand {
+    /// The app's open edit (the draft of the next release).
+    Edits {
+        #[command(subcommand)]
+        command: AmazonEditsCommand,
+    },
+    /// APKs on the open edit.
+    Apks {
+        #[command(subcommand)]
+        command: AmazonApksCommand,
+    },
+    /// Device targeting per APK (Fire tablets, Fire TV).
+    Targeting {
+        #[command(subcommand)]
+        command: AmazonTargetingCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum AmazonEditsCommand {
+    /// Print the open edit; prints `null` when there is none.
+    Get { app_id: String },
+    /// Open an edit; returns the existing one when there is already one.
+    Create { app_id: String },
+    /// Ask Amazon to validate the open edit. Submitting stays in the console.
+    Validate { app_id: String },
+    /// Discard the open edit.
+    Delete { app_id: String },
+}
+
+#[derive(Subcommand)]
+enum AmazonApksCommand {
+    /// List the edit's APKs.
+    List { app_id: String },
+    /// Upload an APK. When the edit has one APK it is replaced (ETag +
+    /// If-Match); with several, `--apk-id` must name the one to replace.
+    Upload {
+        app_id: String,
+        /// The signed .apk.
+        file: PathBuf,
+        /// The APK to replace, from `apks list`.
+        #[arg(long)]
+        apk_id: Option<String>,
+    },
+    /// Remove an APK from the edit.
+    Delete { app_id: String, apk_id: String },
+}
+
+#[derive(Subcommand)]
+enum AmazonTargetingCommand {
+    /// Print an APK's targeting.
+    Get { app_id: String, apk_id: String },
+    /// Replace an APK's targeting with a JSON document (read it with `get`
+    /// first and change only the fields you mean to). The result is read back.
+    Set {
+        app_id: String,
+        apk_id: String,
+        /// Path to the JSON document.
+        #[arg(long)]
+        file: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
 #[allow(clippy::large_enum_variant)]
 enum MsStoreCommand {
     /// The app record, including its pending submission when a draft exists.
@@ -962,6 +1026,18 @@ enum Command {
         play_service_account: Option<PathBuf>,
         #[command(subcommand)]
         command: PlayCommand,
+    },
+    /// Amazon Appstore (Fire tablets, Fire TV): edits, APKs and device
+    /// targeting. Uses a Login with Amazon Security Profile, not the App
+    /// Store Connect key. There is no submit: do that in the console.
+    Amazon {
+        /// JSON file `{"client_id": …, "client_secret": …}`. Falls back to
+        /// `AMAZON_APPSTORE_CREDENTIALS_JSON_PATH`, then to the contents in
+        /// `AMAZON_APPSTORE_CREDENTIALS_JSON`.
+        #[arg(long, global = true)]
+        credentials: Option<PathBuf>,
+        #[command(subcommand)]
+        command: AmazonCommand,
     },
     /// Microsoft Store listings: text on the app's pending submission. Uses
     /// Partner Center API credentials, not the App Store Connect key.
@@ -1315,6 +1391,79 @@ fn lines_arg(file: Option<PathBuf>, flag: &str) -> Result<Option<Vec<String>>> {
             .map(str::to_string)
             .collect(),
     ))
+}
+
+async fn run_amazon(
+    credentials: Option<&std::path::Path>,
+    command: AmazonCommand,
+    dry_run: bool,
+) -> Result<()> {
+    use smbcloud_ascapi_frontend::amazon;
+    let client = amazon::amazon_client(credentials).map_err(|e| anyhow::anyhow!(e))?;
+    let fail = |e: String| anyhow::anyhow!(e);
+    match command {
+        AmazonCommand::Edits { command } => match command {
+            AmazonEditsCommand::Get { app_id } => {
+                print_json(&amazon::edit_get(&client, &app_id).await.map_err(fail)?)
+            }
+            AmazonEditsCommand::Create { app_id } => print_json(
+                &amazon::edit_create(&client, &app_id, dry_run)
+                    .await
+                    .map_err(fail)?,
+            ),
+            AmazonEditsCommand::Validate { app_id } => print_json(
+                &amazon::edit_validate(&client, &app_id)
+                    .await
+                    .map_err(fail)?,
+            ),
+            AmazonEditsCommand::Delete { app_id } => print_json(
+                &amazon::edit_delete(&client, &app_id, dry_run)
+                    .await
+                    .map_err(fail)?,
+            ),
+        },
+        AmazonCommand::Apks { command } => match command {
+            AmazonApksCommand::List { app_id } => {
+                print_json(&amazon::apk_list(&client, &app_id).await.map_err(fail)?)
+            }
+            AmazonApksCommand::Upload {
+                app_id,
+                file,
+                apk_id,
+            } => print_json(
+                &amazon::apk_upload(&client, &app_id, &file, apk_id.as_deref(), dry_run)
+                    .await
+                    .map_err(fail)?,
+            ),
+            AmazonApksCommand::Delete { app_id, apk_id } => print_json(
+                &amazon::apk_delete(&client, &app_id, &apk_id, dry_run)
+                    .await
+                    .map_err(fail)?,
+            ),
+        },
+        AmazonCommand::Targeting { command } => match command {
+            AmazonTargetingCommand::Get { app_id, apk_id } => print_json(
+                &amazon::targeting_get(&client, &app_id, &apk_id)
+                    .await
+                    .map_err(fail)?,
+            ),
+            AmazonTargetingCommand::Set {
+                app_id,
+                apk_id,
+                file,
+            } => {
+                let text = std::fs::read_to_string(&file)
+                    .with_context(|| format!("reading {}", file.display()))?;
+                let document: serde_json::Value = serde_json::from_str(&text)
+                    .with_context(|| format!("{} is not valid JSON", file.display()))?;
+                print_json(
+                    &amazon::targeting_set(&client, &app_id, &apk_id, document, dry_run)
+                        .await
+                        .map_err(fail)?,
+                )
+            }
+        },
+    }
 }
 
 async fn run_msstore(
@@ -3193,6 +3342,14 @@ async fn main() -> Result<()> {
         return run_play(play_service_account.as_deref(), command, cli.dry_run).await;
     }
 
+    if let Some(Command::Amazon {
+        credentials,
+        command,
+    }) = cli.command
+    {
+        return run_amazon(credentials.as_deref(), command, cli.dry_run).await;
+    }
+
     if let Some(Command::Msstore {
         msstore_env,
         command,
@@ -3233,6 +3390,7 @@ async fn main() -> Result<()> {
 
     match command {
         Command::AppGallery { .. }
+        | Command::Amazon { .. }
         | Command::Msstore { .. }
         | Command::Play { .. }
         | Command::Admob { .. } => {

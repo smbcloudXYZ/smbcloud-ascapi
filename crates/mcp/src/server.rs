@@ -70,7 +70,9 @@ ascapi_mcp_tools!(
     "appgallery_package_status",
     "msstore_app_get",
     "msstore_submission_status",
-    "msstore_listing_get"
+    "msstore_listing_get",
+    "amazon_edit_get",
+    "amazon_apk_list"
 );
 
 #[rmcp::tool_handler(router = Self::ascapi_tool_router())]
@@ -119,7 +121,7 @@ mod tests {
     /// The canonical tool names. Adding or renaming one is a
     /// public-contract change, and this list is what makes that
     /// deliberate rather than accidental.
-    const CANONICAL_TOOL_NAMES: [&str; 42] = [
+    const CANONICAL_TOOL_NAMES: [&str; 44] = [
         "app_list",
         "app_get",
         "app_update",
@@ -162,6 +164,8 @@ mod tests {
         "msstore_app_get",
         "msstore_submission_status",
         "msstore_listing_get",
+        "amazon_edit_get",
+        "amazon_apk_list",
     ];
 
     /// Never a tool, at any point, for any caller.
