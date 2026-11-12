@@ -98,7 +98,11 @@ mod tests {
     }
 
     fn temp_apk() -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!("amazon-test-{}.apk", std::process::id()));
+        // Tests run in parallel inside one process, so the pid alone would
+        // make them share (and truncate) one file.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("amazon-test-{}-{n}.apk", std::process::id()));
         std::fs::write(&path, b"PK-apk-bytes").unwrap();
         path
     }

@@ -74,22 +74,51 @@ fn sha256_file(path: &Path) -> Result<(u64, String), String> {
     Ok((bytes.len() as u64, hex))
 }
 
-fn first_apk_id(list: &Value) -> Option<String> {
-    let items = list.as_array().or_else(|| list.get("apks")?.as_array())?;
-    items.first()?.get("id")?.as_str().map(str::to_string)
+/// Every APK id on the edit, from a bare array or an `apks` wrapper.
+fn apk_ids(list: &Value) -> Vec<String> {
+    let items = list
+        .as_array()
+        .or_else(|| list.get("apks").and_then(Value::as_array));
+    items
+        .into_iter()
+        .flatten()
+        .filter_map(|apk| apk.get("id")?.as_str().map(str::to_string))
+        .collect()
 }
 
-/// Upload the APK to the open edit; when the edit already has one, replace it
-/// (Amazon allows one APK per edit slot here, and replace keeps its targeting).
+/// Which APK an upload replaces: the one named, the only one there is, or
+/// none (a fresh upload). More than one with no name is an error, because
+/// replacing an arbitrary one could overwrite another device tier's APK.
+fn pick_target(ids: &[String], named: Option<&str>) -> Result<Option<String>, String> {
+    match (named, ids) {
+        (Some(id), _) if ids.iter().any(|x| x == id) => Ok(Some(id.to_string())),
+        (Some(id), _) => Err(format!(
+            "no APK {id:?} on the edit; it has: {}",
+            ids.join(", ")
+        )),
+        (None, []) => Ok(None),
+        (None, [only]) => Ok(Some(only.clone())),
+        (None, many) => Err(format!(
+            "the edit has {} APKs ({}); pass --apk-id to say which one to replace",
+            many.len(),
+            many.join(", ")
+        )),
+    }
+}
+
+/// Upload the APK to the open edit. With no APK on the edit this uploads; with
+/// one it replaces it; with several, `apk_id` must name the one to replace.
 pub async fn apk_upload(
     client: &AmazonClient,
     app_id: &str,
     apk: &Path,
+    apk_id: Option<&str>,
     dry_run: bool,
 ) -> Result<UploadPlan, String> {
     let (bytes, sha256) = sha256_file(apk)?;
     let edit = open_edit(client, app_id).await?;
-    let existing = first_apk_id(&client.list_apks(app_id, &edit.id).await.map_err(err)?);
+    let ids = apk_ids(&client.list_apks(app_id, &edit.id).await.map_err(err)?);
+    let existing = pick_target(&ids, apk_id)?;
     let action = if existing.is_some() {
         "replace"
     } else {
@@ -220,16 +249,35 @@ pub async fn edit_delete(
 mod tests {
     use super::*;
 
+    fn ids(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
     #[test]
-    fn first_apk_id_reads_a_bare_array_or_an_apks_wrapper() {
+    fn apk_ids_reads_a_bare_array_or_an_apks_wrapper() {
         assert_eq!(
-            first_apk_id(&serde_json::json!([{"id": "a1"}])).as_deref(),
-            Some("a1")
+            apk_ids(&serde_json::json!([{"id": "a1"}, {"id": "a3"}])),
+            ids(&["a1", "a3"])
         );
         assert_eq!(
-            first_apk_id(&serde_json::json!({"apks": [{"id": "a2"}]})).as_deref(),
-            Some("a2")
+            apk_ids(&serde_json::json!({"apks": [{"id": "a2"}]})),
+            ids(&["a2"])
         );
-        assert_eq!(first_apk_id(&serde_json::json!([])), None);
+        assert!(apk_ids(&serde_json::json!([])).is_empty());
+    }
+
+    #[test]
+    fn one_apk_is_replaced_and_none_is_uploaded() {
+        assert_eq!(pick_target(&[], None), Ok(None));
+        assert_eq!(pick_target(&ids(&["a1"]), None), Ok(Some("a1".to_string())));
+    }
+
+    #[test]
+    fn several_apks_need_a_name_and_the_name_must_exist() {
+        let two = ids(&["a1", "a2"]);
+        let err = pick_target(&two, None).unwrap_err();
+        assert!(err.contains("--apk-id") && err.contains("a1") && err.contains("a2"));
+        assert_eq!(pick_target(&two, Some("a2")), Ok(Some("a2".to_string())));
+        assert!(pick_target(&two, Some("zz")).is_err());
     }
 }

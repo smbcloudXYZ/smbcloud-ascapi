@@ -855,11 +855,15 @@ enum AmazonEditsCommand {
 enum AmazonApksCommand {
     /// List the edit's APKs.
     List { app_id: String },
-    /// Upload an APK, or replace the edit's APK (ETag + If-Match) when it has one.
+    /// Upload an APK. When the edit has one APK it is replaced (ETag +
+    /// If-Match); with several, `--apk-id` must name the one to replace.
     Upload {
         app_id: String,
         /// The signed .apk.
         file: PathBuf,
+        /// The APK to replace, from `apks list`.
+        #[arg(long)]
+        apk_id: Option<String>,
     },
     /// Remove an APK from the edit.
     Delete { app_id: String, apk_id: String },
@@ -1422,8 +1426,12 @@ async fn run_amazon(
             AmazonApksCommand::List { app_id } => {
                 print_json(&amazon::apk_list(&client, &app_id).await.map_err(fail)?)
             }
-            AmazonApksCommand::Upload { app_id, file } => print_json(
-                &amazon::apk_upload(&client, &app_id, &file, dry_run)
+            AmazonApksCommand::Upload {
+                app_id,
+                file,
+                apk_id,
+            } => print_json(
+                &amazon::apk_upload(&client, &app_id, &file, apk_id.as_deref(), dry_run)
                     .await
                     .map_err(fail)?,
             ),
