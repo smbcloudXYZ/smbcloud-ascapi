@@ -33,7 +33,12 @@ impl AmazonClient {
                 detail: response.text().await.unwrap_or_default(),
             });
         }
-        Ok(Some(response.json().await?))
+        // Amazon answers 200 with `{}` when the app has no open edit.
+        let value: serde_json::Value = response.json().await?;
+        if value.get("id").is_none() {
+            return Ok(None);
+        }
+        Ok(Some(serde_json::from_value(value)?))
     }
 
     /// Open a new edit. Fails if one is already open.
@@ -60,5 +65,25 @@ impl AmazonClient {
         let request = self.request(Method::DELETE, &url).await?;
         self.send(request).await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::auth::Credentials;
+    use crate::client::testserver::serve;
+    use crate::AmazonClient;
+
+    const TOKEN_OK: &str = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 26\r\nConnection: close\r\n\r\n{\"access_token\":\"tok-123\"}";
+    const EMPTY: &str =
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
+
+    #[tokio::test]
+    async fn an_empty_object_means_no_open_edit() {
+        let (base, _seen) = serve(vec![TOKEN_OK, EMPTY]).await;
+        let creds = Credentials::from_json(r#"{"client_id":"c","client_secret":"s"}"#).unwrap();
+        let client = AmazonClient::new(creds)
+            .with_endpoints(&format!("{base}/auth/o2/token"), &format!("{base}/apps"));
+        assert!(client.get_edit("APP").await.unwrap().is_none());
     }
 }
