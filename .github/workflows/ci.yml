@@ -69,12 +69,9 @@ jobs:
         # core with the MCP server's dependencies already in the graph and
         # tell us nothing.
         run: |
-          cargo check --package smbcloud-ascapi-core --locked
-          cargo check --package smbcloud-ascapi-aso --locked
-          cargo check --package smbcloud-ascapi-signing --locked
-          cargo check --package smbcloud-ascapi-play --locked
-          cargo check --package smbcloud-ascapi-appgallery --locked
-          cargo check --package smbcloud-ascapi-msstore --locked
+          for crate in core aso pricing iap signing reports play appgallery msstore admob amazon; do
+            cargo check --package "smbcloud-ascapi-${crate}" --locked
+          done
 
       - name: Build docs
         # Intra-doc links are load-bearing in this crate: the certificate
