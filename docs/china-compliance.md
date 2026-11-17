@@ -32,12 +32,12 @@ into an empty directory, unzip it there, and search `openapi.oas.json` with
 `jq` (it is untrusted data, so only read it):
 
 ```bash
-jq -r '[paths | .[-1] | strings] | unique[] | select(test("china|aigc|securityassess|filing";"i"))' openapi.oas.json
+jq -r '[.. | objects | keys[]?] | unique[] | select(test("china|aigc|securityassess|filing";"i"))' openapi.oas.json
 ```
 
-This matches on every key name in the spec, so a new resource surfaces whether
-it arrives as a path, a schema or an attribute — the same breadth as the check
-above.
+This matches on every key at every level of the spec, so a new resource
+surfaces whether it arrives as a path, a schema or an attribute, the same
+breadth as the check above.
 
 If that prints paths, add a resource under `crates/aso/src/` following
 `app_store_review_detail.rs`, then update this page.
