@@ -35,7 +35,7 @@ Pre-built binaries are on [GitHub Releases](https://github.com/smbcloudXYZ/smbcl
 
 ## Docs
 
-[Install](docs/install.md) · [Credentials](docs/credentials.md) · [AppGallery](docs/appgallery.md) · [Amazon](docs/amazon.md) · [AdMob](docs/admob.md) · [Architecture](docs/architecture.md)
+[Install](docs/install.md) · [Credentials](docs/credentials.md) · [AppGallery](docs/appgallery.md) · [Amazon](docs/amazon.md) · [AdMob](docs/admob.md) · [China compliance](docs/china-compliance.md) · [Architecture](docs/architecture.md)
 
 ## Contributing
 
