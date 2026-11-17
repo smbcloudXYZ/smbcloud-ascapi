@@ -54,8 +54,9 @@ Done by hand once; every app on the account reuses it.
 
 Later releases go through the API: `asc play bundles upload`, `asc play tracks promote` and
 staged rollout. On 2026-11-09, `tracks promote --dry-run` from internal to alpha, beta and
-production succeeded against the published `com.ondeinference.OndeOnde`. A real promote on that app
-is still untested.
+production succeeded against the published `com.ondeinference.OndeOnde`. As of 2026-11-17 that app
+is live on production (1.0.0, versionCode 2026111110), and with a release published the draft-app
+errors in step 9 no longer appear. A real (non-dry-run) promote through the API is still untested.
 
 ### When the app has rejected changes
 
