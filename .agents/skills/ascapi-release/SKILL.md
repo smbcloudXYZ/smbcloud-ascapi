@@ -88,8 +88,8 @@ cargo workspaces version custom 0.3.0 \
 - `--force '*'` bumps every crate to the shared version even if cargo-workspaces
   thinks some are unchanged (single-version workspace).
 
-This creates the `Release X.Y.Z` commit, the `vX.Y.Z` tag, and **11 per-crate
-tags** `smbcloud-ascapi-{appgallery,aso,cli,core,frontend,mcp,msstore,play,pricing,reports,signing}@X.Y.Z`,
+This creates the `Release X.Y.Z` commit, the `vX.Y.Z` tag, and **14 per-crate
+tags** `smbcloud-ascapi-{admob,amazon,appgallery,aso,cli,core,frontend,iap,mcp,msstore,play,pricing,reports,signing}@X.Y.Z`,
 all pointing at the Release commit.
 
 ## Step 3 — sync `server.json`
@@ -109,9 +109,11 @@ git add server.json
 git commit --amend --no-edit
 NEW=$(git rev-parse HEAD)
 for t in \
+  smbcloud-ascapi-admob@X.Y.Z smbcloud-ascapi-amazon@X.Y.Z \
   smbcloud-ascapi-appgallery@X.Y.Z smbcloud-ascapi-aso@X.Y.Z \
   smbcloud-ascapi-cli@X.Y.Z \
   smbcloud-ascapi-core@X.Y.Z smbcloud-ascapi-frontend@X.Y.Z \
+  smbcloud-ascapi-iap@X.Y.Z \
   smbcloud-ascapi-mcp@X.Y.Z smbcloud-ascapi-msstore@X.Y.Z \
   smbcloud-ascapi-play@X.Y.Z \
   smbcloud-ascapi-pricing@X.Y.Z \
@@ -126,7 +128,7 @@ changes the hash again. After all amends settle, re-point the tags to the final
 HEAD and verify they all land on one commit:
 
 ```sh
-git tag --points-at HEAD   # must list all 12 tags
+git tag --points-at HEAD   # must list all 15 tags (14 per-crate + vX.Y.Z)
 git log -1 --format='sig=%G? key=%GK'   # must be sig=G key=2B76DF0F04014E36
 ```
 
@@ -158,11 +160,12 @@ they don't start extra runs. Three jobs run in order:
 
 1. **`verify`** fails the run if the tag differs from the workspace version in
    `Cargo.toml`, then runs `cargo fmt --check`, clippy with `-D warnings`,
-   `cargo test --workspace --locked`, and `cargo check` on `core`, `aso`,
-   `pricing`, `signing`, `reports`, `play`, `appgallery` and `msstore` on their own.
+   `cargo test --workspace --locked`, and `cargo check` on every lower crate —
+   `core`, `aso`, `pricing`, `iap`, `signing`, `reports`, `play`, `appgallery`,
+   `msstore`, `admob`, `amazon` — on its own.
 2. **`publish`** (environment `crates-io`) publishes `core`, `aso`, `pricing`,
-   `signing`, `reports`, `play`, `appgallery`, `msstore`, `frontend`, `mcp`, `cli`, in that
-   order, with
+   `iap`, `signing`, `reports`, `play`, `appgallery`, `msstore`, `admob`,
+   `amazon`, `frontend`, `mcp`, `cli`, in that order, with
    `cargo publish -p <crate> --locked`. Authentication is crates.io trusted
    publishing: the job exchanges its GitHub OIDC token through
    `rust-lang/crates-io-auth-action`, so there is no registry token secret.
@@ -184,7 +187,7 @@ gh run watch <run-id>
 
 ### One-time setup it depends on
 
-- Each of the eleven crates has a trusted publisher on crates.io for repository
+- Each published crate has a trusted publisher on crates.io for repository
   `smbcloudXYZ/smbcloud-ascapi` and workflow `release-crates.yml`. If a crate
   is missing one, `cargo publish` fails for that crate and the later crates are
   not published. Add the publisher and re-run.
@@ -192,7 +195,28 @@ gh run watch <run-id>
   crates.io, so its first version goes up by hand with a token
   (`cargo publish -p <crate>`), then the publisher is added. `play` went
   through this at 0.3.0. Add any new crate to the `crates=(...)` list in
-  `release-crates.yml` in dependency order before tagging.
+  `release-crates.yml` **and** to the solo-build loop in that workflow's
+  `verify` job and in `ci.yml`, all in dependency order, before tagging.
+- **Outstanding at the time of writing:** `iap`, `admob` and `amazon` are in
+  the `crates=(...)` list but have never been published, so the next release
+  has to bootstrap all three by hand. Do it between the version bump (step 2)
+  and the tag push (step 4), while the workspace is already at `X.Y.Z`:
+  `cargo publish -p smbcloud-ascapi-{iap,admob,amazon}` with a token, then add
+  a trusted publisher for each. None of the three blocks the others — `iap`
+  depends only on `core`, and `admob` and `amazon` on nothing in the workspace
+  — so publish them in any order. If you skip this, the run dies at `frontend`
+  (which depends on `admob` and `amazon`) or at `cli` (which depends on `iap`),
+  leaving every later crate unpublished. Re-check before each release with:
+
+  ```sh
+  for c in core aso pricing iap signing reports play appgallery msstore admob \
+           amazon frontend mcp cli; do
+    curl -sS -o /dev/null -w "%{http_code} smbcloud-ascapi-$c\n" \
+      -H 'User-Agent: smbcloudXYZ/smbcloud-ascapi release-check' \
+      "https://crates.io/api/v1/crates/smbcloud-ascapi-$c"
+    sleep 1   # crates.io caps the API at 1 req/s; without this a 429/403 reads as neither 404 nor 200
+  done   # 404 = still unpublished, needs the manual bootstrap; 200 = published
+  ```
 - If a trusted publisher names an environment, it must be `crates-io`, which
   is the environment the `publish` job runs in.
 

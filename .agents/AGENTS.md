@@ -165,7 +165,10 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace --locked
-cargo check -p smbcloud-ascapi-core --locked   # also -aso, -play, -admob, -msstore, -signing: each lower crate must build alone
+cargo check -p smbcloud-ascapi-core --locked   # each lower crate must build alone:
+for c in core aso pricing iap signing reports play appgallery msstore admob amazon; do
+  cargo check -p "smbcloud-ascapi-$c" --locked
+done
 ```
 
 Single test: `cargo test -p smbcloud-ascapi-aso build::tests::<name>`.
@@ -198,8 +201,11 @@ merged since.
 ## Architecture notes
 
 - Layering is `core` → `aso`/`pricing`/`iap`/`signing`/`reports` → `frontend` →
-  `mcp` / `cli`. Don't add a dependency that points up or sideways; CI checks
-  the lower crates build alone.
+  `mcp` / `cli`. The non-Apple store backends `play`, `appgallery`, `msstore`,
+  `admob` and `amazon` are siblings of `core`'s dependents: they use their own
+  auth and error envelopes, so they don't depend on `core` either, and they
+  feed `frontend` and `cli` directly. Don't add a dependency that points up or
+  sideways; CI checks the lower crates build alone.
 - The MCP tool set is declared by the `ascapi_mcp_tools!` macro
   (`crates/mcp/src/lib.rs`), which takes every tool name as a literal;
   `crates/mcp/src/server.rs` supplies them. Adding a tool means touching the
