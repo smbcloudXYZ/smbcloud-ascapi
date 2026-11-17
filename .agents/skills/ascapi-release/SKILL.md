@@ -214,7 +214,8 @@ gh run watch <run-id>
     curl -sS -o /dev/null -w "%{http_code} smbcloud-ascapi-$c\n" \
       -H 'User-Agent: smbcloudXYZ/smbcloud-ascapi release-check' \
       "https://crates.io/api/v1/crates/smbcloud-ascapi-$c"
-  done   # 404 = still unpublished, needs the manual bootstrap
+    sleep 1   # crates.io caps the API at 1 req/s; without this a 429/403 reads as neither 404 nor 200
+  done   # 404 = still unpublished, needs the manual bootstrap; 200 = published
   ```
 - If a trusted publisher names an environment, it must be `crates-io`, which
   is the environment the `publish` job runs in.
