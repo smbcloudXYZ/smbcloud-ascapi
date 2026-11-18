@@ -28,6 +28,10 @@ pub enum Error {
 
     #[error("Google Play API returned {status}: {detail}")]
     Api { status: u16, detail: String },
+
+    /// Input refused before anything was sent.
+    #[error("{0}")]
+    Invalid(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

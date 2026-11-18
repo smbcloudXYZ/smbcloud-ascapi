@@ -10,7 +10,13 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use smbcloud_ascapi_play::{
-    png_dimensions, Image, ImageType, Listing, ListingFields, PlayClient, ServiceAccount, Track,
+    png_dimensions,
+    product::{
+        check_applied, existing_price, is_billing_refusal, pick_purchase_option, product_body,
+        purchase_option_state, regions_version, BILLING_HINT,
+    },
+    Details, Image, ImageType, Listing, ListingFields, Money, NewProduct, PlayClient,
+    ProductChanges, RolloutAction, ServiceAccount, Track,
 };
 
 /// Resolve the Play client. `path` wins; then `PLAY_SERVICE_ACCOUNT_JSON_PATH`;
@@ -124,6 +130,63 @@ pub async fn read_images(
 pub async fn read_track(client: &PlayClient, package: &str, track: &str) -> Result<Track, String> {
     in_edit!(client, package, false, |c, id| {
         Box::pin(async move { c.get_track(package, id, track).await.map_err(err) })
+    })
+}
+
+pub async fn read_details(client: &PlayClient, package: &str) -> Result<Details, String> {
+    in_edit!(client, package, false, |c, id| {
+        Box::pin(async move { c.get_details(package, id).await.map_err(err) })
+    })
+}
+
+/// The result of a details update.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetailsUpdate {
+    pub dry_run: bool,
+    pub sent: Details,
+    pub before: Details,
+    /// Read back from a fresh edit after commit. `None` on a dry run.
+    pub after: Option<Details>,
+}
+
+pub async fn update_details(
+    client: &PlayClient,
+    package: &str,
+    details: Details,
+    dry_run: bool,
+) -> Result<DetailsUpdate, String> {
+    if details.is_empty() {
+        return Err("nothing to update: pass at least one details field".to_string());
+    }
+    let sent = details.clone();
+    let before = in_edit!(client, package, !dry_run, |c, id| {
+        Box::pin(async move {
+            let before = c.get_details(package, id).await.map_err(err)?;
+            if !dry_run {
+                c.patch_details(package, id, &details).await.map_err(err)?;
+            }
+            Ok(before)
+        })
+    })?;
+    let after = if dry_run {
+        None
+    } else {
+        let stored = read_details(client, package).await?;
+        let wrong = sent.diff(&stored);
+        if !wrong.is_empty() {
+            return Err(format!(
+                "committed, but the read-back differs in: {}",
+                wrong.join(", ")
+            ));
+        }
+        Some(stored)
+    };
+    Ok(DetailsUpdate {
+        dry_run,
+        sent,
+        before,
+        after,
     })
 }
 
@@ -334,6 +397,7 @@ pub struct NotesSet {
     pub track: Track,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn set_track_notes(
     client: &PlayClient,
     package: &str,
@@ -341,18 +405,25 @@ pub async fn set_track_notes(
     version_code: &str,
     locale: &str,
     notes: &str,
+    changes_not_sent_for_review: bool,
     dry_run: bool,
 ) -> Result<NotesSet, String> {
-    let planned = in_edit!(client, package, !dry_run, |c, id| {
-        Box::pin(async move {
-            let mut track = c.get_track(package, id, track_name).await.map_err(err)?;
-            track.set_release_notes(version_code, locale, notes)?;
-            if !dry_run {
-                c.update_track(package, id, &track).await.map_err(err)?;
-            }
-            Ok(track)
-        })
-    })?;
+    let planned = in_edit!(
+        client,
+        package,
+        !dry_run,
+        changes_not_sent_for_review,
+        |c, id| {
+            Box::pin(async move {
+                let mut track = c.get_track(package, id, track_name).await.map_err(err)?;
+                track.set_release_notes(version_code, locale, notes)?;
+                if !dry_run {
+                    c.update_track(package, id, &track).await.map_err(err)?;
+                }
+                Ok(track)
+            })
+        }
+    )?;
     if dry_run {
         return Ok(NotesSet {
             dry_run,
@@ -370,6 +441,174 @@ pub async fn set_track_notes(
         return Err("committed, but the read-back release notes differ".to_string());
     }
     Ok(NotesSet { dry_run, track })
+}
+
+/// The manifest every Android App Bundle carries.
+const BUNDLE_MANIFEST: &str = "base/manifest/AndroidManifest.xml";
+
+/// A bundle checked on disk, ready to upload.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleFile {
+    pub path: PathBuf,
+    pub bytes: u64,
+    /// Lowercase hex SHA-256 of the file, to compare with Play's.
+    pub sha256: String,
+}
+
+/// Check a file is an `.aab` (a zip with `base/manifest/AndroidManifest.xml`)
+/// and hash it. Nothing is sent.
+pub fn load_bundle(path: &Path) -> Result<(BundleFile, Vec<u8>), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes.as_slice()))
+        .map_err(|_| format!("{} is not a zip archive, so not an .aab", path.display()))?;
+    if archive.by_name(BUNDLE_MANIFEST).is_err() {
+        return Err(format!(
+            "{} has no {BUNDLE_MANIFEST}; it is a zip but not an Android App Bundle",
+            path.display()
+        ));
+    }
+    let file = BundleFile {
+        path: path.to_path_buf(),
+        bytes: bytes.len() as u64,
+        sha256: hex(&Sha256::digest(&bytes)),
+    };
+    Ok((file, bytes))
+}
+
+fn check_upload_status(status: &str) -> Result<(), String> {
+    match status {
+        "draft" | "completed" => Ok(()),
+        other => Err(format!(
+            "status {other:?} is not supported for an upload; use draft or completed"
+        )),
+    }
+}
+
+/// What `bundles upload --dry-run` reports. A dry run cannot know the version
+/// code: Play assigns it on upload.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundlePlan {
+    pub dry_run: bool,
+    pub package: String,
+    pub track: String,
+    pub status: String,
+    pub bundle: BundleFile,
+    pub mapping_file: Option<PathBuf>,
+    pub ack_install_warning: bool,
+}
+
+/// The local half of `bundles upload`: everything that can be checked without
+/// sending anything.
+pub fn plan_bundle_upload(
+    package: &str,
+    track: &str,
+    file: &Path,
+    status: &str,
+    mapping_file: Option<&Path>,
+    ack_install_warning: bool,
+) -> Result<BundlePlan, String> {
+    check_upload_status(status)?;
+    let (bundle, _) = load_bundle(file)?;
+    if let Some(mapping) = mapping_file {
+        if !mapping.is_file() {
+            return Err(format!("mapping file {} does not exist", mapping.display()));
+        }
+    }
+    Ok(BundlePlan {
+        dry_run: true,
+        package: package.to_string(),
+        track: track.to_string(),
+        status: status.to_string(),
+        bundle,
+        mapping_file: mapping_file.map(Path::to_path_buf),
+        ack_install_warning,
+    })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleUploaded {
+    /// Assigned by Play; use it with `tracks set-notes` or `tracks promote`.
+    pub version_code: u64,
+    pub sha256: String,
+    pub status: String,
+    pub mapping_uploaded: bool,
+    /// The track as read back after the commit.
+    pub track: Track,
+}
+
+/// Whether the read-back track shows `code` on a release at `status`.
+fn bundle_landed(track: &Track, code: &str, status: &str) -> bool {
+    track
+        .releases
+        .iter()
+        .any(|r| r.version_codes.iter().any(|c| c == code) && r.status.as_deref() == Some(status))
+}
+
+/// Upload an `.aab`, optionally its mapping file, and put it on `track_name`
+/// as a new release, in one edit. Play's SHA-256 must match the local one, and
+/// the track is read back after the commit. The version code is consumed on
+/// upload, so a failure after that point still uses one up.
+pub async fn upload_bundle(
+    client: &PlayClient,
+    package: &str,
+    track_name: &str,
+    file: &Path,
+    status: &str,
+    mapping_file: Option<&Path>,
+    ack_install_warning: bool,
+) -> Result<BundleUploaded, String> {
+    check_upload_status(status)?;
+    let (bundle, bytes) = load_bundle(file)?;
+    let mapping = match mapping_file {
+        Some(p) => Some(std::fs::read(p).map_err(|e| format!("cannot read {}: {e}", p.display()))?),
+        None => None,
+    };
+    let mapping_uploaded = mapping.is_some();
+    let local_sha = bundle.sha256;
+    let expected = local_sha.as_str();
+    let version_code = in_edit!(client, package, true, |c, id| {
+        Box::pin(async move {
+            let uploaded = c
+                .upload_bundle(package, id, bytes, ack_install_warning)
+                .await
+                .map_err(err)?;
+            if !uploaded.sha256.eq_ignore_ascii_case(expected) {
+                return Err(format!(
+                    "Play stored version code {} with SHA-256 {}, but the local file is {expected}; \
+                     nothing was committed",
+                    uploaded.version_code, uploaded.sha256
+                ));
+            }
+            if let Some(mapping) = mapping {
+                c.upload_deobfuscation(package, id, uploaded.version_code, mapping)
+                    .await
+                    .map_err(err)?;
+            }
+            let code = uploaded.version_code.to_string();
+            let track = c.get_track(package, id, track_name).await.map_err(err)?;
+            let planned = track.place_uploaded(&code, status)?;
+            c.update_track(package, id, &planned).await.map_err(err)?;
+            Ok(uploaded.version_code)
+        })
+    })?;
+    let track = read_track(client, package, track_name).await?;
+    let code = version_code.to_string();
+    let landed = bundle_landed(&track, &code, status);
+    if !landed {
+        return Err(format!(
+            "committed, but {track_name} does not show version code {version_code} as {status}"
+        ));
+    }
+    Ok(BundleUploaded {
+        version_code,
+        sha256: local_sha,
+        status: status.to_string(),
+        mapping_uploaded,
+        track,
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -458,6 +697,387 @@ pub async fn promote_track(
     })
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RolledOut {
+    pub dry_run: bool,
+    /// The release already had the requested status and fraction.
+    pub noop: bool,
+    /// The track as it will be (dry run or no-op) or is (read back after
+    /// commit).
+    pub track: Track,
+}
+
+/// Change the rollout of `version_code` on `track_name` inside one edit: get
+/// the track, plan, update it, validate and commit. A fraction never goes
+/// down. A dry run deletes the edit. After the commit the track is read back
+/// and compared.
+pub async fn rollout_track(
+    client: &PlayClient,
+    package: &str,
+    track_name: &str,
+    version_code: &str,
+    action: RolloutAction,
+    changes_not_sent_for_review: bool,
+    dry_run: bool,
+) -> Result<RolledOut, String> {
+    let plan = in_edit!(
+        client,
+        package,
+        !dry_run,
+        changes_not_sent_for_review,
+        |c, id| {
+            Box::pin(async move {
+                let track = c.get_track(package, id, track_name).await.map_err(err)?;
+                let plan = track.rollout(version_code, action)?;
+                if !dry_run && !plan.noop {
+                    c.update_track(package, id, &plan.target)
+                        .await
+                        .map_err(err)?;
+                }
+                Ok(plan)
+            })
+        }
+    )?;
+    if dry_run || plan.noop {
+        return Ok(RolledOut {
+            dry_run,
+            noop: plan.noop,
+            track: plan.target,
+        });
+    }
+    let stored = read_track(client, package, track_name).await?;
+    let landed = stored
+        .releases
+        .iter()
+        .find(|r| r.version_codes.iter().any(|c| c == version_code))
+        .is_some_and(|r| match action {
+            // A halt keeps the fraction the rollout reached, and a later resume
+            // is checked against it, so a halt that dropped it did not land.
+            RolloutAction::Halt => {
+                let planned = plan
+                    .target
+                    .releases
+                    .iter()
+                    .find(|p| p.version_codes.iter().any(|c| c == version_code))
+                    .and_then(|p| p.user_fraction);
+                r.status.as_deref() == Some("halted")
+                    && match (planned, r.user_fraction) {
+                        (Some(want), Some(got)) => (want - got).abs() < 1e-9,
+                        (want, got) => want.is_none() && got.is_none(),
+                    }
+            }
+            RolloutAction::Complete => r.status.as_deref() == Some("completed"),
+            RolloutAction::Fraction(f) if f >= 1.0 => r.status.as_deref() == Some("completed"),
+            RolloutAction::Fraction(f) => {
+                r.status.as_deref() == Some("inProgress")
+                    && r.user_fraction.is_some_and(|got| (got - f).abs() < 1e-9)
+            }
+        });
+    if !landed {
+        return Err(format!(
+            "committed, but {track_name} does not show version code {version_code} at the \
+             requested status and fraction"
+        ));
+    }
+    Ok(RolledOut {
+        dry_run,
+        noop: false,
+        track: stored,
+    })
+}
+
+/// The highest version code on any track of `package`, read in a throwaway
+/// edit. Play refuses an upload whose code is not above it, so this is the
+/// number to stay above.
+pub async fn max_version_code(client: &PlayClient, package: &str) -> Result<u64, String> {
+    let tracks = in_edit!(client, package, false, |c, id| {
+        Box::pin(async move { c.list_tracks(package, id).await.map_err(err) })
+    })?;
+    tracks
+        .iter()
+        .filter_map(Track::max_version_code)
+        .max()
+        .ok_or_else(|| format!("no track of {package} carries a version code"))
+}
+
+/// All one-time products of the app.
+pub async fn read_products(
+    client: &PlayClient,
+    package: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    client.list_products(package).await.map_err(err)
+}
+
+/// One one-time product by id.
+pub async fn read_product(
+    client: &PlayClient,
+    package: &str,
+    product_id: &str,
+) -> Result<serde_json::Value, String> {
+    client.get_product(package, product_id).await.map_err(err)
+}
+
+/// An error message, with a line on uploading a BILLING build when Play's
+/// refusal looks like it is about billing.
+fn with_billing_hint(error: smbcloud_ascapi_play::Error) -> String {
+    if is_billing_refusal(&error) {
+        format!("{error}\n{BILLING_HINT}")
+    } else {
+        err(error)
+    }
+}
+
+/// The result of creating a one-time product.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductCreated {
+    pub dry_run: bool,
+    /// The product body that is sent (dry run) or was sent.
+    pub sent: serde_json::Value,
+    /// The product as Play stores it, read back after activation. `None` on a
+    /// dry run.
+    pub stored: Option<serde_json::Value>,
+}
+
+/// Create a one-time product priced in one currency and converted to every
+/// region, then activate its purchase option. Refuses a product id that
+/// already exists, so a rerun never overwrites a price. A dry run converts
+/// prices (a read) and sends nothing.
+pub async fn create_product(
+    client: &PlayClient,
+    product: &NewProduct,
+    price: &Money,
+    dry_run: bool,
+) -> Result<ProductCreated, String> {
+    product.check().map_err(err)?;
+    let package = product.package.as_str();
+    let id = product.product_id.as_str();
+    match client.get_product(package, id).await {
+        Ok(_) => {
+            return Err(format!(
+                "{id} already exists in {package}; it was left alone"
+            ))
+        }
+        Err(smbcloud_ascapi_play::Error::Api { status: 404, .. }) => {}
+        Err(e) => return Err(err(e)),
+    }
+    let converted = client
+        .convert_region_prices(package, price)
+        .await
+        .map_err(err)?;
+    let body = product_body(product, &converted).map_err(err)?;
+    if dry_run {
+        return Ok(ProductCreated {
+            dry_run,
+            sent: body,
+            stored: None,
+        });
+    }
+    let version = regions_version(&converted).map_err(err)?;
+    client
+        .upsert_product(package, id, &body, &version)
+        .await
+        .map_err(with_billing_hint)?;
+    client
+        .activate_purchase_option(package, id, &product.purchase_option_id)
+        .await
+        .map_err(|e| {
+            format!(
+                "created {id}, but activating its purchase option failed: {}",
+                with_billing_hint(e)
+            )
+        })?;
+    let stored = client
+        .get_product(package, id)
+        .await
+        .map_err(|e| format!("created {id}, but reading it back failed: {}", err(e)))?;
+    let state = stored
+        .pointer("/purchaseOptions/0/state")
+        .and_then(|v| v.as_str());
+    if state != Some("ACTIVE") {
+        return Err(format!(
+            "created {id}, but its purchase option is {} and not ACTIVE",
+            state.unwrap_or("missing")
+        ));
+    }
+    Ok(ProductCreated {
+        dry_run,
+        sent: body,
+        stored: Some(stored),
+    })
+}
+
+/// The result of activating or deactivating a purchase option.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PurchaseOptionStateChanged {
+    pub dry_run: bool,
+    pub purchase_option_id: String,
+    /// The state before.
+    pub from: Option<String>,
+    /// The state after (read back), or the one that would be set on a dry run.
+    pub to: String,
+    /// It already was in the requested state, so nothing was sent.
+    pub noop: bool,
+}
+
+/// Activate or deactivate one purchase option, then read the state back. With
+/// no `purchase_option_id`, the product's only option is used; several options
+/// make that an error.
+pub async fn set_purchase_option_active(
+    client: &PlayClient,
+    package: &str,
+    product_id: &str,
+    purchase_option_id: Option<&str>,
+    activate: bool,
+    dry_run: bool,
+) -> Result<PurchaseOptionStateChanged, String> {
+    let product = client.get_product(package, product_id).await.map_err(err)?;
+    let option = pick_purchase_option(&product, purchase_option_id).map_err(err)?;
+    let from = purchase_option_state(&product, &option).map(str::to_string);
+    let wanted = |state: &str| {
+        if activate {
+            state == "ACTIVE"
+        } else {
+            state.starts_with("INACTIVE")
+        }
+    };
+    let target = if activate { "ACTIVE" } else { "INACTIVE" }.to_string();
+    if from.as_deref().is_some_and(wanted) {
+        return Ok(PurchaseOptionStateChanged {
+            dry_run,
+            purchase_option_id: option,
+            to: from.clone().unwrap_or(target),
+            from,
+            noop: true,
+        });
+    }
+    if dry_run {
+        return Ok(PurchaseOptionStateChanged {
+            dry_run,
+            purchase_option_id: option,
+            from,
+            to: target,
+            noop: false,
+        });
+    }
+    if activate {
+        client
+            .activate_purchase_option(package, product_id, &option)
+            .await
+    } else {
+        client
+            .deactivate_purchase_option(package, product_id, &option)
+            .await
+    }
+    .map_err(with_billing_hint)?;
+    let stored = client.get_product(package, product_id).await.map_err(|e| {
+        format!(
+            "changed the state of {product_id}, but reading it back failed: {}",
+            err(e)
+        )
+    })?;
+    let state = purchase_option_state(&stored, &option).unwrap_or("missing");
+    if !wanted(state) {
+        return Err(format!(
+            "asked for {target} on {product_id}/{option}, but it reads back as {state}"
+        ));
+    }
+    Ok(PurchaseOptionStateChanged {
+        dry_run,
+        purchase_option_id: option,
+        from,
+        to: state.to_string(),
+        noop: false,
+    })
+}
+
+/// The result of updating a one-time product.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductUpdated {
+    pub dry_run: bool,
+    /// The `updateMask` sent.
+    pub update_mask: String,
+    /// The patch body that is sent (dry run) or was sent.
+    pub sent: serde_json::Value,
+    /// The product as read back after the update. `None` on a dry run.
+    pub stored: Option<serde_json::Value>,
+}
+
+/// Change a product's listing text and/or price. Reads the product, changes
+/// only what was given and patches with an `updateMask` and without
+/// `allowMissing`, so a mistyped id fails instead of creating a product. A
+/// dry run prints the body and sends nothing (the price conversion, if any,
+/// is a read).
+pub async fn update_product(
+    client: &PlayClient,
+    package: &str,
+    product_id: &str,
+    changes: &ProductChanges,
+    dry_run: bool,
+) -> Result<ProductUpdated, String> {
+    let product = client.get_product(package, product_id).await.map_err(err)?;
+    // Play wants the regions version quoted back on any write. Prices give it
+    // through the conversion; for a text-only change, convert a price the
+    // product already has, which sends nothing.
+    let probe = match (&changes.price, changes.touches_listings()) {
+        (Some(price), _) => Some(price.clone()),
+        (None, true) => Some(existing_price(&product).ok_or_else(|| {
+            "the product has no price to read a regions version from; \
+             pass --price to set one"
+                .to_string()
+        })?),
+        (None, false) => None,
+    };
+    let converted = match &probe {
+        Some(price) => Some(
+            client
+                .convert_region_prices(package, price)
+                .await
+                .map_err(err)?,
+        ),
+        None => None,
+    };
+    let body = smbcloud_ascapi_play::product::update_body(
+        &product,
+        changes,
+        changes.price.as_ref().and(converted.as_ref()),
+    )
+    .map_err(err)?;
+    let mask = changes.update_mask().to_string();
+    if dry_run {
+        return Ok(ProductUpdated {
+            dry_run,
+            update_mask: mask,
+            sent: body,
+            stored: None,
+        });
+    }
+    let version = match converted.as_ref() {
+        Some(c) => Some(regions_version(c).map_err(err)?),
+        None => None,
+    };
+    client
+        .update_product(package, product_id, &body, &mask, version.as_deref())
+        .await
+        .map_err(err)?;
+    let stored = client.get_product(package, product_id).await.map_err(|e| {
+        format!(
+            "updated {product_id}, but reading it back failed: {}",
+            err(e)
+        )
+    })?;
+    check_applied(&stored, &body)?;
+    Ok(ProductUpdated {
+        dry_run,
+        update_mask: mask,
+        sent: body,
+        stored: Some(stored),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -507,5 +1127,79 @@ mod tests {
             let error = play_client(None).err().unwrap();
             assert!(error.contains("PLAY_SERVICE_ACCOUNT_JSON_PATH"));
         }
+    }
+
+    fn zip_with(dir: &Path, name: &str, entries: &[&str]) -> PathBuf {
+        let path = dir.join(name);
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
+        for entry in entries {
+            zip.start_file(*entry, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            std::io::Write::write_all(&mut zip, b"x").unwrap();
+        }
+        zip.finish().unwrap();
+        path
+    }
+
+    #[test]
+    fn load_bundle_accepts_a_bundle_and_rejects_the_rest() {
+        let dir = std::env::temp_dir().join(format!("asc-aab-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = zip_with(&dir, "ok.aab", &[BUNDLE_MANIFEST]);
+        let (file, bytes) = load_bundle(&good).unwrap();
+        assert_eq!(file.bytes as usize, bytes.len());
+        assert_eq!(file.sha256.len(), 64);
+
+        let bare = zip_with(&dir, "bare.aab", &["other.txt"]);
+        assert!(load_bundle(&bare)
+            .unwrap_err()
+            .contains("not an Android App Bundle"));
+
+        let text = dir.join("a.aab");
+        std::fs::write(&text, b"not a zip").unwrap();
+        assert!(load_bundle(&text).unwrap_err().contains("not a zip"));
+        assert!(load_bundle(&dir.join("missing.aab")).is_err());
+
+        let missing_mapping = dir.join("nope.txt");
+        assert!(plan_bundle_upload(
+            "p",
+            "internal",
+            &good,
+            "draft",
+            Some(&missing_mapping),
+            false
+        )
+        .unwrap_err()
+        .contains("mapping file"));
+        assert!(plan_bundle_upload("p", "internal", &good, "inProgress", None, false).is_err());
+        let plan = plan_bundle_upload("p", "internal", &good, "draft", None, false).unwrap();
+        assert!(plan.dry_run);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn read_back_must_show_the_code_at_the_status() {
+        let track: Track = serde_json::from_str(
+            r#"{"track":"internal","releases":[{"versionCodes":["8"],"status":"draft"}]}"#,
+        )
+        .unwrap();
+        assert!(bundle_landed(&track, "8", "draft"));
+        assert!(!bundle_landed(&track, "8", "completed"));
+        assert!(!bundle_landed(&track, "9", "draft"));
+    }
+
+    #[test]
+    fn billing_refusals_get_the_upload_hint() {
+        let refusal = smbcloud_ascapi_play::Error::Api {
+            status: 400,
+            detail: "no Billing permission".into(),
+        };
+        let message = with_billing_hint(refusal);
+        assert!(message.contains("asc play bundles upload"));
+        let other = smbcloud_ascapi_play::Error::Api {
+            status: 400,
+            detail: "bad price".into(),
+        };
+        assert!(!with_billing_hint(other).contains("bundles upload"));
     }
 }

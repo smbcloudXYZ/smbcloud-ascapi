@@ -1,0 +1,22 @@
+[package]
+name = "smbcloud-ascapi-amazon"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Amazon Appstore App Submission API: Login with Amazon client-credentials authentication, edits, APK upload and device targeting."
+readme = "README.md"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+reqwest = { workspace = true, features = ["json", "rustls-tls-native-roots"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["fs"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "net", "io-util"] }

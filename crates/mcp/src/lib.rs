@@ -73,12 +73,16 @@ macro_rules! ascapi_mcp_tools {
         $play_listing_list_name:literal,
         $play_images_list_name:literal,
         $play_track_get_name:literal,
+        $admob_apps_list_name:literal,
+        $admob_adunits_list_name:literal,
         $appgallery_app_info_get_name:literal,
         $appgallery_package_list_name:literal,
         $appgallery_package_status_name:literal,
         $msstore_app_get_name:literal,
         $msstore_submission_status_name:literal,
-        $msstore_listing_get_name:literal
+        $msstore_listing_get_name:literal,
+        $amazon_edit_get_name:literal,
+        $amazon_apk_list_name:literal
     ) => {
         #[::rmcp::tool_router(router = ascapi_tool_router, vis = "pub(crate)")]
         impl $server {
@@ -1049,6 +1053,54 @@ macro_rules! ascapi_mcp_tools {
             }
 
             #[::rmcp::tool(
+                name = $admob_apps_list_name,
+                title = "List AdMob apps",
+                annotations(title = "List AdMob apps", read_only_hint = true, idempotent_hint = true),
+                description = "Purpose: list the apps of an AdMob account with their ca-app-pub app IDs. When to use vs siblings: use this to find an app ID; admob_adunits_list lists the ad units. Behavior: reads accounts.apps.list, nothing changes. Prerequisites: a Desktop-app OAuth client JSON at ADMOB_OAUTH_CLIENT_JSON_PATH and a cached sign-in made once with the asc admob login command. Failure modes: missing client or sign-in returns an invalid-request error naming what is absent; AdMob errors are returned verbatim with their status. Limitations: read-only; creating ad units is available only through the asc admob adunits create command."
+            )]
+            async fn admob_apps_list(
+                &self,
+                parameters: ::rmcp::handler::server::wrapper::Parameters<$crate::AdmobAppsListRequest>,
+            ) -> ::std::result::Result<::rmcp::model::CallToolResult, ::rmcp::model::ErrorData> {
+                use ::smbcloud_ascapi_frontend::admob;
+                let client = admob::admob_client(None)
+                    .map_err(|error| ::rmcp::model::ErrorData::invalid_request(error, None))?;
+                let request = parameters.0;
+                let value = admob::list_apps(&client, request.account.as_deref())
+                    .await
+                    .map_err(|error| ::rmcp::model::ErrorData::internal_error(error, None))?;
+                Ok(::rmcp::model::CallToolResult::success(vec![
+                    ::rmcp::model::ContentBlock::json(&value)?,
+                ]))
+            }
+
+            #[::rmcp::tool(
+                name = $admob_adunits_list_name,
+                title = "List AdMob ad units",
+                annotations(title = "List AdMob ad units", read_only_hint = true, idempotent_hint = true),
+                description = "Purpose: list the ad units of an AdMob account (ID, format, app, reward settings), optionally for one app. When to use vs siblings: use this to read a unit's ca-app-pub ad unit ID after creating it in the console; admob_apps_list finds app IDs. Behavior: reads accounts.adUnits.list, nothing changes. Prerequisites: a Desktop-app OAuth client JSON at ADMOB_OAUTH_CLIENT_JSON_PATH and a cached sign-in made once with the asc admob login command. Failure modes: missing client or sign-in returns an invalid-request error naming what is absent; AdMob errors are returned verbatim with their status. Limitations: read-only; creating ad units is available only through the asc admob adunits create command."
+            )]
+            async fn admob_adunits_list(
+                &self,
+                parameters: ::rmcp::handler::server::wrapper::Parameters<$crate::AdmobAdunitsListRequest>,
+            ) -> ::std::result::Result<::rmcp::model::CallToolResult, ::rmcp::model::ErrorData> {
+                use ::smbcloud_ascapi_frontend::admob;
+                let client = admob::admob_client(None)
+                    .map_err(|error| ::rmcp::model::ErrorData::invalid_request(error, None))?;
+                let request = parameters.0;
+                let value = admob::list_ad_units(
+                    &client,
+                    request.account.as_deref(),
+                    request.app.as_deref(),
+                )
+                .await
+                .map_err(|error| ::rmcp::model::ErrorData::internal_error(error, None))?;
+                Ok(::rmcp::model::CallToolResult::success(vec![
+                    ::rmcp::model::ContentBlock::json(&value)?,
+                ]))
+            }
+
+            #[::rmcp::tool(
                 name = $appgallery_app_info_get_name,
                 title = "Get AppGallery app info",
                 annotations(title = "Get AppGallery app info", read_only_hint = true, idempotent_hint = true),
@@ -1173,6 +1225,50 @@ macro_rules! ascapi_mcp_tools {
                     .map_err(|error| ::rmcp::model::ErrorData::invalid_request(error, None))?;
                 let request = parameters.0;
                 let value = msstore::read_listing(&client, request.product_id.as_deref(), &request.locale)
+                    .await
+                    .map_err(|error| ::rmcp::model::ErrorData::internal_error(error, None))?;
+                Ok(::rmcp::model::CallToolResult::success(vec![
+                    ::rmcp::model::ContentBlock::json(&value)?,
+                ]))
+            }
+
+            #[::rmcp::tool(
+                name = $amazon_edit_get_name,
+                title = "Get the Amazon Appstore open edit",
+                annotations(title = "Get the Amazon Appstore open edit", read_only_hint = true, idempotent_hint = true),
+                description = "Purpose: read the open edit (the draft of the next release) of an Amazon Appstore app, or null when there is none. When to use vs siblings: amazon_apk_list lists the APKs on that edit. Behavior: GET edits, nothing changes. Prerequisites: a Login with Amazon Security Profile credential file ({client_id, client_secret}) at AMAZON_APPSTORE_CREDENTIALS_JSON_PATH or its contents in AMAZON_APPSTORE_CREDENTIALS_JSON, with App Submission API access enabled. Failure modes: missing credentials return an invalid-request error naming what is absent; an Amazon HTTP error is returned verbatim with its status. Limitations: read-only; uploading, targeting and validating go through asc amazon on the command line, and submitting stays in the Developer Console."
+            )]
+            async fn amazon_edit_get(
+                &self,
+                parameters: ::rmcp::handler::server::wrapper::Parameters<$crate::AmazonAppRequest>,
+            ) -> ::std::result::Result<::rmcp::model::CallToolResult, ::rmcp::model::ErrorData> {
+                use ::smbcloud_ascapi_frontend::amazon;
+                let client = amazon::amazon_client(None)
+                    .map_err(|error| ::rmcp::model::ErrorData::invalid_request(error, None))?;
+                let request = parameters.0;
+                let value = amazon::edit_get(&client, &request.app_id)
+                    .await
+                    .map_err(|error| ::rmcp::model::ErrorData::internal_error(error, None))?;
+                Ok(::rmcp::model::CallToolResult::success(vec![
+                    ::rmcp::model::ContentBlock::json(&value)?,
+                ]))
+            }
+
+            #[::rmcp::tool(
+                name = $amazon_apk_list_name,
+                title = "List Amazon Appstore APKs",
+                annotations(title = "List Amazon Appstore APKs", read_only_hint = true, idempotent_hint = true),
+                description = "Purpose: list the APKs on an Amazon Appstore app's open edit with their id, version code and name. When to use vs siblings: amazon_edit_get reads the edit itself. Behavior: GET edits/{id}/apks on the open edit, nothing changes. Prerequisites: a Login with Amazon Security Profile credential file ({client_id, client_secret}) at AMAZON_APPSTORE_CREDENTIALS_JSON_PATH or its contents in AMAZON_APPSTORE_CREDENTIALS_JSON, with App Submission API access enabled. Failure modes: missing credentials return an invalid-request error naming what is absent; an Amazon HTTP error is returned verbatim with its status. Limitations: read-only; fails when the app has no open edit."
+            )]
+            async fn amazon_apk_list(
+                &self,
+                parameters: ::rmcp::handler::server::wrapper::Parameters<$crate::AmazonAppRequest>,
+            ) -> ::std::result::Result<::rmcp::model::CallToolResult, ::rmcp::model::ErrorData> {
+                use ::smbcloud_ascapi_frontend::amazon;
+                let client = amazon::amazon_client(None)
+                    .map_err(|error| ::rmcp::model::ErrorData::invalid_request(error, None))?;
+                let request = parameters.0;
+                let value = amazon::apk_list(&client, &request.app_id)
                     .await
                     .map_err(|error| ::rmcp::model::ErrorData::internal_error(error, None))?;
                 Ok(::rmcp::model::CallToolResult::success(vec![

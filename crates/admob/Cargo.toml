@@ -1,0 +1,22 @@
+[package]
+name = "smbcloud-ascapi-admob"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "AdMob API: list accounts, apps and ad units, and create rewarded ad units where Google has granted write access. Authenticated with a user OAuth refresh token."
+readme = "README.md"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+base64 = { workspace = true }
+rand = { workspace = true }
+reqwest = { workspace = true, features = ["json", "rustls-tls-native-roots"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = "0.10"
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time", "net", "io-util"] }

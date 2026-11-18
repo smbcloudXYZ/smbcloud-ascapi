@@ -20,6 +20,8 @@
 //!   `profileContent`, and [`profiles::download_profile`] returns the path
 //!   it wrote instead.
 
+pub mod admob;
+pub mod amazon;
 pub mod appgallery;
 pub mod attach_build;
 pub mod await_processing;
@@ -31,13 +33,15 @@ pub mod keychain;
 pub mod msstore;
 pub mod play;
 pub mod profiles;
+pub mod release_controls;
 pub mod review;
 pub mod time;
 pub mod upload;
 
 pub use attach_build::{attach_build, AttachedBuild};
 pub use await_processing::{
-    await_processing, classify, AwaitConfig, AwaitOutcome, ProcessingClass,
+    answer_missing_compliance, await_processing, classify, AwaitConfig, AwaitOutcome,
+    ComplianceOutcome, ProcessingClass,
 };
 pub use certificates::{
     certificate_type_from_str, issue_certificate, CertificateSummary, IssuedCertificate,
@@ -47,6 +51,10 @@ pub use env::api_key_from_env;
 #[cfg(target_os = "macos")]
 pub use keychain::{run_doctor, DoctorCertificate, DoctorReport};
 pub use profiles::{download_profile, profile_type_from_str, DownloadedProfile, ProfileSummary};
+pub use release_controls::{
+    phased_release, release_blocker, release_version, update_release_controls,
+    validate_release_controls, PhasedReleaseOutcome, ReleaseOutcome,
+};
 pub use review::{plan_submission, submit_for_review, SubmissionPlan, SubmittedReview};
 pub use time::{is_expired, now_iso8601};
 pub use upload::{upload_package, AltoolAuth, UploadOutcome};

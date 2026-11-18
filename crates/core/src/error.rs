@@ -21,6 +21,12 @@ pub enum Error {
     #[error("App Store Connect API returned {status}: {detail}")]
     Api { status: u16, detail: String },
 
+    #[error("invalid upload plan: {0}")]
+    UploadPlan(String),
+
+    #[error("App Store Connect's response carried no {0}")]
+    MissingData(&'static str),
+
     #[error("failed to generate an RSA key pair: {0}")]
     KeyGeneration(String),
 

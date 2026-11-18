@@ -18,7 +18,7 @@
 use std::time::Duration;
 
 use serde::Serialize;
-use smbcloud_ascapi_aso::build::{Build, BuildFilter};
+use smbcloud_ascapi_aso::build::{Build, BuildFilter, BuildUpdateAttributes};
 use smbcloud_ascapi_aso::prelude::*;
 use smbcloud_ascapi_core::Client;
 
@@ -158,6 +158,76 @@ pub async fn await_processing(
         let remaining = config.timeout - elapsed;
         tokio::time::sleep(config.interval.min(remaining)).await;
     }
+}
+
+/// What [`answer_missing_compliance`] did about export compliance.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComplianceOutcome {
+    pub build_id: String,
+    /// The answer was missing, so it was sent (or, on a dry run, would be).
+    pub answered: bool,
+    pub dry_run: bool,
+    /// `usesNonExemptEncryption` as App Store Connect reports it after the
+    /// call. `None` on a dry run that would answer.
+    pub uses_non_exempt_encryption: Option<bool>,
+}
+
+/// Answer export compliance for `build_id` only when the build has no answer
+/// yet. An answer already on the build is never overwritten, since the
+/// build's own `ITSAppUsesNonExemptEncryption` is the authority. After a
+/// write the build is read back and must report the answer.
+pub async fn answer_missing_compliance(
+    client: &Client,
+    build_id: &str,
+    uses_non_exempt_encryption: bool,
+    dry_run: bool,
+) -> Result<ComplianceOutcome, String> {
+    let build = client
+        .get_build(build_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    if let Some(existing) = build.attributes.uses_non_exempt_encryption {
+        return Ok(ComplianceOutcome {
+            build_id: build_id.to_string(),
+            answered: false,
+            dry_run,
+            uses_non_exempt_encryption: Some(existing),
+        });
+    }
+    if dry_run {
+        return Ok(ComplianceOutcome {
+            build_id: build_id.to_string(),
+            answered: true,
+            dry_run,
+            uses_non_exempt_encryption: None,
+        });
+    }
+    client
+        .update_build(
+            build_id,
+            BuildUpdateAttributes {
+                uses_non_exempt_encryption: Some(uses_non_exempt_encryption),
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    let read = client
+        .get_build(build_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    if read.attributes.uses_non_exempt_encryption != Some(uses_non_exempt_encryption) {
+        return Err(format!(
+            "set usesNonExemptEncryption to {uses_non_exempt_encryption}, but the build reports {:?}",
+            read.attributes.uses_non_exempt_encryption
+        ));
+    }
+    Ok(ComplianceOutcome {
+        build_id: build_id.to_string(),
+        answered: true,
+        dry_run,
+        uses_non_exempt_encryption: read.attributes.uses_non_exempt_encryption,
+    })
 }
 
 #[cfg(test)]

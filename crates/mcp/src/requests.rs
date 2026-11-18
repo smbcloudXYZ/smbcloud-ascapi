@@ -277,6 +277,23 @@ pub struct BetaAppReviewDetailGetRequest {
 }
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct AdmobAppsListRequest {
+    /// AdMob account, `pub-…`. Defaults to the only account the user has.
+    #[serde(default)]
+    pub account: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct AdmobAdunitsListRequest {
+    /// AdMob account, `pub-…`. Defaults to the only account the user has.
+    #[serde(default)]
+    pub account: Option<String>,
+    /// Only units of this app ID, `ca-app-pub-…~…`.
+    #[serde(default)]
+    pub app: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct PlayPackageRequest {
     /// Android application id, e.g. xyz.smbcloud.SiGit.
     pub package_name: String,
@@ -345,4 +362,10 @@ pub struct MsStoreListingGetRequest {
     pub product_id: Option<String>,
     /// Listing locale, e.g. en-us.
     pub locale: String,
+}
+
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+pub struct AmazonAppRequest {
+    /// Amazon Appstore app id, e.g. `amzn1.devportal.mobileapp.<hex>`.
+    pub app_id: String,
 }

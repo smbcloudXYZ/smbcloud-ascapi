@@ -17,7 +17,7 @@ for the full crate table.
 
 ## Workspace layout
 
-Domain crates (`aso`, `pricing`, `signing`, `reports`) know nothing about each
+Domain crates (`aso`, `pricing`, `iap`, `signing`, `reports`) know nothing about each
 other or the front ends. Each extends `smbcloud_ascapi_core::Client` with an
 **extension trait** (Rust only allows inherent impls in the crate that owns the
 type). Import a domain's `prelude::*` to pull its traits in at once.
@@ -74,6 +74,42 @@ stale `AuthKey_<id>.p8` and fail with a 401, and `--auth-string` would put
 the key in the process table. Upload is CLI-only, because a tool call that
 blocks for minutes and publishes a build doesn't belong in MCP.
 
+## In-app purchases (CLI)
+
+One-time products (the v2 `inAppPurchases` resource) through `crates/iap`.
+Subscriptions are not covered. A product is ready to submit once it has a
+localization, a price, territories and a review screenshot:
+
+```sh
+asc in-app-purchases list <APP_ID>
+asc in-app-purchases get <IAP_ID>        # product, localizations, manual price, territories, screenshot
+asc in-app-purchases create <APP_ID> --product-id onde.unlock --name Onde --type non-consumable \
+  [--family-sharable] [--review-note-file note.txt]
+asc in-app-purchases update <IAP_ID> [--name …] [--review-note-file …]
+asc in-app-purchases localize <IAP_ID> --locale en-US --name "Unlock Onde" --description "Unlimited answers, paid once"
+asc in-app-purchases price-points <IAP_ID> [--territory USA]
+asc in-app-purchases set-price <IAP_ID> --price 4.99 [--territory USA]
+asc in-app-purchases set-availability <IAP_ID> (--all-territories | --territory SWE …) [--no-new-territories]
+asc in-app-purchases review-screenshot <IAP_ID> paywall.png [--replace]
+asc in-app-purchases promotional-image <IAP_ID> unlock.png [--replace]   # optional 1024x1024 store image
+```
+
+- Every write honours the global `--dry-run` and reads the result back,
+  exiting nonzero when it does not match.
+- The product id is permanent: Apple never lets this account reuse it, even
+  after deletion. `create` refuses an id the app already has.
+- Family Sharing can be turned on later but never off, so `create` leaves it
+  off unless `--family-sharable` is given, and `update` cannot change it.
+- `set-price` matches the customer price string exactly ("4.99") against the
+  territory's price points and posts a schedule with that one manual price;
+  Apple derives the other storefronts. The inline price uses the local id
+  `${price1}`, as Apple documents.
+- There is no submit command. An app's first in-app purchase is reviewed with
+  an app version and is attached on the version page in App Store Connect.
+- A freshly created product can answer one read with a 401 for a few seconds.
+  Rerunning the same command is safe: every write is idempotent.
+- No MCP tools yet, like `pricing`.
+
 ## AppGallery (CLI)
 
 `asc appgallery` covers the Android Publishing API through `crates/appgallery`
@@ -129,7 +165,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace --locked
-cargo check -p smbcloud-ascapi-core --locked   # also -aso, -play, -msstore, -signing: each lower crate must build alone
+cargo check -p smbcloud-ascapi-core --locked   # also -aso, -play, -admob, -msstore, -signing: each lower crate must build alone
 ```
 
 Single test: `cargo test -p smbcloud-ascapi-aso build::tests::<name>`.
@@ -161,7 +197,7 @@ merged since.
 
 ## Architecture notes
 
-- Layering is `core` → `aso`/`pricing`/`signing`/`reports` → `frontend` →
+- Layering is `core` → `aso`/`pricing`/`iap`/`signing`/`reports` → `frontend` →
   `mcp` / `cli`. Don't add a dependency that points up or sideways; CI checks
   the lower crates build alone.
 - The MCP tool set is declared by the `ascapi_mcp_tools!` macro
@@ -271,6 +307,8 @@ Everything in Play happens inside an *edit*. Each command opens one, applies,
 and deletes the edit. Writes read back after commit and fail on any difference.
 
 ```sh
+asc play details get <PACKAGE>
+asc play details update <PACKAGE> [--contact-website U] [--contact-email E] [--contact-phone P] [--default-language L]
 asc play listings list <PACKAGE>
 asc play listings update <PACKAGE> --locale en-US \
   --title-file t.txt --short-description-file s.txt --full-description-file d.txt
@@ -278,6 +316,13 @@ asc play images list <PACKAGE> --locale en-US --type phone-screenshots
 asc play images replace <PACKAGE> --locale en-US --type phone-screenshots --file a.png --file b.png
 asc play tracks get <PACKAGE> --track internal
 asc play tracks set-notes <PACKAGE> --track internal --version-code 120 --locale en-US --notes-file n.txt
+asc play bundles upload <PACKAGE> --file app.aab --track internal \
+  [--status draft|completed] [--mapping-file mapping.txt] [--ack-install-warning]
+asc play products list <PACKAGE>
+asc play products create <PACKAGE> --id app.unlock --title "Unlock" --description "..." \
+  --price 4.99 --language en-GB     # --dry-run prints the body and sends nothing
+asc play products update <PACKAGE> <ID> [--title T] [--description D] [--language L] [--price 5.99 --currency USD]
+asc play products activate|deactivate <PACKAGE> <ID> [--purchase-option buy]
 ```
 
 Limits linted before sending: title 30, short description 80, full description
@@ -286,8 +331,60 @@ Limits linted before sending: title 30, short description 80, full description
 `images replace` deletes the bucket and uploads the files in one edit, so a
 failed upload keeps the old set. MCP exposes only the reads
 (`play_listing_list`, `play_images_list`, `play_track_get`); every write stays
-CLI-only, like review submission. The operations live in
+CLI-only, like review submission. `bundles upload` puts an `.aab` on a track in
+one edit: it uploads, compares Play's SHA-256 with the local file's, optionally
+attaches a ProGuard `mapping.txt`, replaces a `draft` or `inProgress` release on
+the track (`completed` ones stay), commits and reads the track back. It prints
+the `versionCode` Play assigned, for `tracks set-notes` or `tracks promote`. `bundles upload`, `tracks promote` and `tracks set-notes` take
+`--changes-not-sent-for-review` for an app with rejected changes pending; Play rejects the flag
+when nothing is pending, so it is opt-in. The
+default status is `draft`. `--dry-run` is local only (the file is a zip with
+`base/manifest/AndroidManifest.xml`, the mapping file exists) and needs no
+credentials; it cannot report the version code. A real upload uses up its
+version code permanently, even if the edit fails afterwards. One-time products are not inside an edit:
+`products create` converts one price to every region
+(`pricing:convertRegionPrices`), creates the product with `onetimeproducts.patch`
+(`allowMissing`), activates its purchase option and reads it back; it refuses an
+id that exists. Note the patch path is lowercase `onetimeproducts` while get,
+list and the state change use `oneTimeProducts`.
+`products update` reads the product, changes only the given fields and patches
+with an `updateMask` and no `allowMissing`, so a mistyped id is a 404, not a new
+product; a price change is converted again and only touches regions the product
+already prices, keeping each region's availability. `activate` and `deactivate`
+use the product's only purchase option (`--purchase-option` if there are
+several) and read the state back. A `create` refused with a 4xx that mentions
+billing gets a line pointing at `asc play bundles upload`, since Play wants a
+build declaring `com.android.vending.BILLING` first; that match is covered by
+unit tests only. The operations live in
 `crates/frontend/src/play.rs`.
+
+**New apps.** An app that has never been published is a draft app, and the API cannot take
+it public. Creating the app, the content forms, and the first production or open-testing release
+are Console steps. The API answers `Staged rollout is not permitted on draft app.` or
+`Only releases with status draft may be created on draft app.` when you try. Do not retry with other
+flags; send the release from Console. `products create` also needs an uploaded build that
+declares `com.android.vending.BILLING`. The full order is in
+[`docs/google-play-new-app.md`](../docs/google-play-new-app.md).
+
+## AdMob (CLI)
+
+`crates/admob` is a sibling of `crates/play` and does not depend on `core`. AdMob takes user OAuth
+only: `auth.rs` runs the installed-app flow (PKCE, loopback redirect) and caches a refresh token at
+`~/.config/asc/admob-token.json` (0600). The client JSON comes from `--admob-oauth-client` or
+`ADMOB_OAUTH_CLIENT_JSON_PATH`. `Debug` impls redact secrets; keep it that way.
+
+```bash
+asc admob login
+asc admob accounts
+asc admob apps list
+asc admob adunits list [--app ca-app-pub-...~...]
+asc admob adunits create --app ... --name ... --format rewarded --reward-amount 50 --reward-item Semitones
+```
+
+`adunits create` (v1beta) is limited access and answers 403 without a grant; the client maps that to a
+clear error. `create` reads the units back to confirm. MCP exposes only `admob_apps_list` and
+`admob_adunits_list`. The SSV callback URL and GDPR messages are console-only. Setup and limits:
+[`docs/admob.md`](../docs/admob.md). Shared code: `crates/frontend/src/admob.rs`.
 
 ## Microsoft Store (CLI)
 

@@ -15,7 +15,8 @@ use smbcloud_ascapi_aso::app_screenshot_set::{
 };
 use smbcloud_ascapi_aso::app_store_review_detail::{AppStoreReviewDetailWrite, NOTES_MAX_LEN};
 use smbcloud_ascapi_aso::app_store_version::{
-    AppStoreVersionCreateAttributes, AppStoreVersionUpdateFields, Platform,
+    AppStoreVersionCreateAttributes, AppStoreVersionUpdateFields, PhasedReleaseAction, Platform,
+    ReleaseType,
 };
 use smbcloud_ascapi_aso::app_store_version_localization::{
     AppStoreVersionLocalizationAttributes, AppStoreVersionLocalizationCreateAttributes,
@@ -27,11 +28,22 @@ use smbcloud_ascapi_aso::bundle_id::{BundleIdCreateAttributes, BundleIdPlatform}
 use smbcloud_ascapi_aso::prelude::*;
 use smbcloud_ascapi_core::{ApiKey, Client};
 use smbcloud_ascapi_frontend::attach_build::attach_build;
-use smbcloud_ascapi_frontend::await_processing::{await_processing, AwaitConfig};
+use smbcloud_ascapi_frontend::await_processing::{
+    answer_missing_compliance, await_processing, AwaitConfig,
+};
+use smbcloud_ascapi_frontend::release_controls;
 use smbcloud_ascapi_frontend::review;
 use smbcloud_ascapi_frontend::upload::{self, upload_package, validate_app, AltoolAuth, AltoolOp};
+use smbcloud_ascapi_iap::in_app_purchase::{
+    InAppPurchaseCreateAttributes, InAppPurchaseType, InAppPurchaseUpdateAttributes,
+};
+use smbcloud_ascapi_iap::localization::LocalizationUpdate;
+use smbcloud_ascapi_iap::prelude::*;
 use smbcloud_ascapi_msstore::ListingFields as MsStoreListingFields;
-use smbcloud_ascapi_play::{ImageType as PlayImageType, ListingFields as PlayListingFields};
+use smbcloud_ascapi_play::{
+    Details as PlayDetails, ImageType as PlayImageType, ListingFields as PlayListingFields,
+    Money as PlayMoney, NewProduct as PlayNewProduct,
+};
 use smbcloud_ascapi_pricing::app_price::PriceKind;
 use smbcloud_ascapi_pricing::prelude::*;
 use smbcloud_ascapi_reports::prelude::*;
@@ -85,7 +97,84 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+enum AdmobCommand {
+    /// Sign in with a browser once and cache the refresh token at
+    /// ~/.config/asc/admob-token.json.
+    Login,
+    /// AdMob accounts the signed-in Google user can see.
+    Accounts,
+    /// Apps in the account.
+    Apps {
+        #[command(subcommand)]
+        command: AdmobAppsCommand,
+    },
+    /// Ad units: list, or create a rewarded unit (limited access).
+    Adunits {
+        #[command(subcommand)]
+        command: AdmobAdunitsCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum AdmobAppsCommand {
+    /// List the account's apps with their `ca-app-pub-…~…` app IDs.
+    List,
+}
+
+#[derive(Subcommand)]
+enum AdmobAdunitsCommand {
+    /// List ad units, optionally for one app.
+    List {
+        /// Only units of this app ID (`ca-app-pub-…~…`).
+        #[arg(long)]
+        app: Option<String>,
+    },
+    /// Create a rewarded ad unit. adUnits.create is limited access: without
+    /// a grant from Google it answers 403, and the unit has to be created in
+    /// the AdMob console. Honors --dry-run.
+    Create {
+        /// App ID (`ca-app-pub-…~…`), from `asc admob apps list`.
+        #[arg(long)]
+        app: String,
+        #[arg(long)]
+        name: String,
+        /// Only `rewarded` is supported.
+        #[arg(long, default_value = "rewarded")]
+        format: String,
+        #[arg(long)]
+        reward_amount: u64,
+        #[arg(long)]
+        reward_item: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum PlayDetailsCommand {
+    /// Contact website, email, phone and default language.
+    Get { package: String },
+    /// Patch the details, then read them back from a fresh edit. Honors
+    /// --dry-run.
+    Update {
+        package: String,
+        #[arg(long)]
+        contact_website: Option<String>,
+        #[arg(long)]
+        contact_email: Option<String>,
+        #[arg(long)]
+        contact_phone: Option<String>,
+        /// BCP-47 tag, for example en-US.
+        #[arg(long)]
+        default_language: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum PlayCommand {
+    /// App details: contact website, email, phone, default language.
+    Details {
+        #[command(subcommand)]
+        command: PlayDetailsCommand,
+    },
     /// Localized store listing text (title, short and full description).
     Listings {
         #[command(subcommand)]
@@ -100,6 +189,16 @@ enum PlayCommand {
     Tracks {
         #[command(subcommand)]
         command: PlayTracksCommand,
+    },
+    /// Upload an app bundle (.aab) to a track.
+    Bundles {
+        #[command(subcommand)]
+        command: PlayBundlesCommand,
+    },
+    /// One-time products (in-app products): list, read, create, update, activate, deactivate.
+    Products {
+        #[command(subcommand)]
+        command: PlayProductsCommand,
     },
 }
 
@@ -558,6 +657,10 @@ enum PlayTracksCommand {
         /// Read the notes from a UTF-8 file; one trailing newline is dropped.
         #[arg(long)]
         notes_file: Option<PathBuf>,
+        /// Commit with changesNotSentForReview, for apps that have rejected
+        /// changes pending.
+        #[arg(long)]
+        changes_not_sent_for_review: bool,
     },
     /// Promote a version code from one track to another, for example
     /// internal to production, in one edit. A staged rollout is the default
@@ -578,6 +681,206 @@ enum PlayTracksCommand {
         /// changes pending.
         #[arg(long)]
         changes_not_sent_for_review: bool,
+    },
+    /// Change the rollout of a version code on a track, in one edit: a
+    /// share of users, everyone, or a stop. A fraction is never lowered, and
+    /// the track is read back after the commit. With `--dry-run` the edit is
+    /// deleted and the planned track is printed.
+    #[command(group(
+        clap::ArgGroup::new("action")
+            .required(true)
+            .multiple(false)
+            .args(["fraction", "complete", "halt"])
+    ))]
+    Rollout {
+        package: String,
+        #[arg(long, default_value = "production")]
+        track: String,
+        #[arg(long)]
+        version_code: String,
+        /// Roll out to this share of users, above 0 and up to 1.0 (1.0
+        /// releases to everyone).
+        #[arg(long)]
+        fraction: Option<f64>,
+        /// Release to everyone.
+        #[arg(long)]
+        complete: bool,
+        /// Halt a staged rollout, keeping the fraction it reached.
+        #[arg(long)]
+        halt: bool,
+        /// Commit with changesNotSentForReview, for apps that have rejected
+        /// changes pending.
+        #[arg(long)]
+        changes_not_sent_for_review: bool,
+    },
+    /// The highest version code on any track, printed as a number. Play
+    /// rejects an upload whose code is not above it.
+    MaxVersionCode { package: String },
+}
+
+#[derive(Subcommand)]
+enum PlayBundlesCommand {
+    /// Upload an .aab and put it on a track as a new release, in one edit.
+    /// Play's SHA-256 is compared with the local file's and the track is read
+    /// back after the commit. A draft or inProgress release on the track is
+    /// replaced; completed ones stay. The version code is printed so a script
+    /// can chain `tracks set-notes` or `tracks promote`. A real upload uses up
+    /// its version code for good. With `--dry-run` only local checks run and
+    /// nothing is sent: the file is a zip with a base manifest, and the
+    /// mapping file exists.
+    Upload {
+        package: String,
+        /// The .aab to upload.
+        #[arg(long)]
+        file: PathBuf,
+        #[arg(long)]
+        track: String,
+        /// Release status on the track: draft (the default) or completed.
+        #[arg(long, default_value = "draft")]
+        status: String,
+        /// ProGuard/R8 mapping.txt for the uploaded version code.
+        #[arg(long)]
+        mapping_file: Option<PathBuf>,
+        /// Accept an install-time warning Play would otherwise refuse the
+        /// bundle for.
+        #[arg(long)]
+        ack_install_warning: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum PlayProductsCommand {
+    /// Every one-time product of the app.
+    List { package: String },
+    /// One one-time product by id.
+    Get { package: String, product_id: String },
+    /// Create a one-time product, price it in every region from one price,
+    /// and activate it. Refuses an id that exists. With `--dry-run` it prints
+    /// the product body and sends nothing.
+    Create {
+        package: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        title: String,
+        #[arg(long)]
+        description: String,
+        /// Price in `--currency`, for example 4.99. Play converts it to every
+        /// other region, as Play Console does.
+        #[arg(long)]
+        price: String,
+        #[arg(long, default_value = "USD")]
+        currency: String,
+        /// Language of the title and description; the app's default language.
+        #[arg(long)]
+        language: String,
+        /// Purchase option id.
+        #[arg(long, default_value = "buy")]
+        option_id: String,
+    },
+    /// Change a product's title, description or price. Only the fields given
+    /// change; the product must exist. With `--dry-run` it prints the patch
+    /// body and sends nothing.
+    Update {
+        package: String,
+        product_id: String,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+        /// Which listing's text to change; optional when the product has one.
+        #[arg(long)]
+        language: Option<String>,
+        /// New price in `--currency`, converted to every region the product
+        /// already prices.
+        #[arg(long)]
+        price: Option<String>,
+        #[arg(long, default_value = "USD")]
+        currency: String,
+        /// Which purchase option a price change re-prices; optional when the
+        /// product has one option.
+        #[arg(long)]
+        purchase_option: Option<String>,
+    },
+    /// Make a product buyable again. Without `--purchase-option`, uses the
+    /// product's only option.
+    Activate {
+        package: String,
+        product_id: String,
+        #[arg(long)]
+        purchase_option: Option<String>,
+    },
+    /// Stop selling a product. Without `--purchase-option`, uses the
+    /// product's only option.
+    Deactivate {
+        package: String,
+        product_id: String,
+        #[arg(long)]
+        purchase_option: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum AmazonCommand {
+    /// The app's open edit (the draft of the next release).
+    Edits {
+        #[command(subcommand)]
+        command: AmazonEditsCommand,
+    },
+    /// APKs on the open edit.
+    Apks {
+        #[command(subcommand)]
+        command: AmazonApksCommand,
+    },
+    /// Device targeting per APK (Fire tablets, Fire TV).
+    Targeting {
+        #[command(subcommand)]
+        command: AmazonTargetingCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum AmazonEditsCommand {
+    /// Print the open edit; prints `null` when there is none.
+    Get { app_id: String },
+    /// Open an edit; returns the existing one when there is already one.
+    Create { app_id: String },
+    /// Ask Amazon to validate the open edit. Submitting stays in the console.
+    Validate { app_id: String },
+    /// Discard the open edit.
+    Delete { app_id: String },
+}
+
+#[derive(Subcommand)]
+enum AmazonApksCommand {
+    /// List the edit's APKs.
+    List { app_id: String },
+    /// Upload an APK. When the edit has one APK it is replaced (ETag +
+    /// If-Match); with several, `--apk-id` must name the one to replace.
+    Upload {
+        app_id: String,
+        /// The signed .apk.
+        file: PathBuf,
+        /// The APK to replace, from `apks list`.
+        #[arg(long)]
+        apk_id: Option<String>,
+    },
+    /// Remove an APK from the edit.
+    Delete { app_id: String, apk_id: String },
+}
+
+#[derive(Subcommand)]
+enum AmazonTargetingCommand {
+    /// Print an APK's targeting.
+    Get { app_id: String, apk_id: String },
+    /// Replace an APK's targeting with a JSON document (read it with `get`
+    /// first and change only the fields you mean to). The result is read back.
+    Set {
+        app_id: String,
+        apk_id: String,
+        /// Path to the JSON document.
+        #[arg(long)]
+        file: PathBuf,
     },
 }
 
@@ -700,6 +1003,19 @@ enum Command {
         #[command(subcommand)]
         command: AppGalleryCommand,
     },
+    /// AdMob accounts, apps and ad units. Uses a Google user OAuth sign-in
+    /// (AdMob has no service accounts), not the App Store Connect key.
+    Admob {
+        /// Path to a Desktop-app OAuth client JSON. Falls back to
+        /// `ADMOB_OAUTH_CLIENT_JSON_PATH`.
+        #[arg(long, global = true)]
+        admob_oauth_client: Option<PathBuf>,
+        /// AdMob account (`pub-…`). Defaults to the only account the user has.
+        #[arg(long, global = true)]
+        account: Option<String>,
+        #[command(subcommand)]
+        command: AdmobCommand,
+    },
     /// Google Play store listings: text, images, and release notes. Uses a
     /// Play service account, not the App Store Connect key.
     Play {
@@ -710,6 +1026,18 @@ enum Command {
         play_service_account: Option<PathBuf>,
         #[command(subcommand)]
         command: PlayCommand,
+    },
+    /// Amazon Appstore (Fire tablets, Fire TV): edits, APKs and device
+    /// targeting. Uses a Login with Amazon Security Profile, not the App
+    /// Store Connect key. There is no submit: do that in the console.
+    Amazon {
+        /// JSON file `{"client_id": …, "client_secret": …}`. Falls back to
+        /// `AMAZON_APPSTORE_CREDENTIALS_JSON_PATH`, then to the contents in
+        /// `AMAZON_APPSTORE_CREDENTIALS_JSON`.
+        #[arg(long, global = true)]
+        credentials: Option<PathBuf>,
+        #[command(subcommand)]
+        command: AmazonCommand,
     },
     /// Microsoft Store listings: text on the app's pending submission. Uses
     /// Partner Center API credentials, not the App Store Connect key.
@@ -776,6 +1104,13 @@ enum Command {
     AppPrices {
         #[command(subcommand)]
         command: AppPricesCommand,
+    },
+    /// In-app purchases (one-time products, not subscriptions): create
+    /// one, localize it, price it, choose its territories and upload the
+    /// App Review screenshot.
+    InAppPurchases {
+        #[command(subcommand)]
+        command: InAppPurchasesCommand,
     },
     /// Signing certificates: list what the team holds, issue a new one, or
     /// revoke an old one.
@@ -1058,6 +1393,79 @@ fn lines_arg(file: Option<PathBuf>, flag: &str) -> Result<Option<Vec<String>>> {
     ))
 }
 
+async fn run_amazon(
+    credentials: Option<&std::path::Path>,
+    command: AmazonCommand,
+    dry_run: bool,
+) -> Result<()> {
+    use smbcloud_ascapi_frontend::amazon;
+    let client = amazon::amazon_client(credentials).map_err(|e| anyhow::anyhow!(e))?;
+    let fail = |e: String| anyhow::anyhow!(e);
+    match command {
+        AmazonCommand::Edits { command } => match command {
+            AmazonEditsCommand::Get { app_id } => {
+                print_json(&amazon::edit_get(&client, &app_id).await.map_err(fail)?)
+            }
+            AmazonEditsCommand::Create { app_id } => print_json(
+                &amazon::edit_create(&client, &app_id, dry_run)
+                    .await
+                    .map_err(fail)?,
+            ),
+            AmazonEditsCommand::Validate { app_id } => print_json(
+                &amazon::edit_validate(&client, &app_id)
+                    .await
+                    .map_err(fail)?,
+            ),
+            AmazonEditsCommand::Delete { app_id } => print_json(
+                &amazon::edit_delete(&client, &app_id, dry_run)
+                    .await
+                    .map_err(fail)?,
+            ),
+        },
+        AmazonCommand::Apks { command } => match command {
+            AmazonApksCommand::List { app_id } => {
+                print_json(&amazon::apk_list(&client, &app_id).await.map_err(fail)?)
+            }
+            AmazonApksCommand::Upload {
+                app_id,
+                file,
+                apk_id,
+            } => print_json(
+                &amazon::apk_upload(&client, &app_id, &file, apk_id.as_deref(), dry_run)
+                    .await
+                    .map_err(fail)?,
+            ),
+            AmazonApksCommand::Delete { app_id, apk_id } => print_json(
+                &amazon::apk_delete(&client, &app_id, &apk_id, dry_run)
+                    .await
+                    .map_err(fail)?,
+            ),
+        },
+        AmazonCommand::Targeting { command } => match command {
+            AmazonTargetingCommand::Get { app_id, apk_id } => print_json(
+                &amazon::targeting_get(&client, &app_id, &apk_id)
+                    .await
+                    .map_err(fail)?,
+            ),
+            AmazonTargetingCommand::Set {
+                app_id,
+                apk_id,
+                file,
+            } => {
+                let text = std::fs::read_to_string(&file)
+                    .with_context(|| format!("reading {}", file.display()))?;
+                let document: serde_json::Value = serde_json::from_str(&text)
+                    .with_context(|| format!("{} is not valid JSON", file.display()))?;
+                print_json(
+                    &amazon::targeting_set(&client, &app_id, &apk_id, document, dry_run)
+                        .await
+                        .map_err(fail)?,
+                )
+            }
+        },
+    }
+}
+
 async fn run_msstore(
     env_path: Option<&std::path::Path>,
     command: MsStoreCommand,
@@ -1163,15 +1571,133 @@ async fn run_msstore(
     }
 }
 
+async fn run_admob(
+    oauth_client: Option<&std::path::Path>,
+    account: Option<&str>,
+    command: AdmobCommand,
+    dry_run: bool,
+) -> Result<()> {
+    use smbcloud_ascapi_frontend::admob;
+    let fail = |e: String| anyhow::anyhow!(e);
+    // Sign-in and the dry run need no API call, so no cached token either.
+    if let AdmobCommand::Login = command {
+        println!("{}", admob::login(oauth_client).await.map_err(fail)?);
+        return Ok(());
+    }
+    if let AdmobCommand::Adunits {
+        command:
+            AdmobAdunitsCommand::Create {
+                app,
+                name,
+                format,
+                reward_amount,
+                reward_item,
+            },
+    } = &command
+    {
+        let body =
+            admob::plan_create(app, name, format, *reward_amount, reward_item).map_err(fail)?;
+        if dry_run {
+            println!("# dry run: nothing was sent; body that would be POSTed to adUnits.create:");
+            return print_json(&body);
+        }
+    }
+    let client = admob::admob_client(oauth_client).map_err(fail)?;
+    match command {
+        AdmobCommand::Login => unreachable!("handled above"),
+        AdmobCommand::Accounts => print_json(&admob::list_accounts(&client).await.map_err(fail)?),
+        AdmobCommand::Apps {
+            command: AdmobAppsCommand::List,
+        } => print_json(&admob::list_apps(&client, account).await.map_err(fail)?),
+        AdmobCommand::Adunits { command } => match command {
+            AdmobAdunitsCommand::List { app } => print_json(
+                &admob::list_ad_units(&client, account, app.as_deref())
+                    .await
+                    .map_err(fail)?,
+            ),
+            AdmobAdunitsCommand::Create {
+                app,
+                name,
+                format,
+                reward_amount,
+                reward_item,
+            } => {
+                let body = admob::plan_create(&app, &name, &format, reward_amount, &reward_item)
+                    .map_err(fail)?;
+                print_json(
+                    &admob::create_ad_unit(&client, account, &body)
+                        .await
+                        .map_err(fail)?,
+                )
+            }
+        },
+    }
+}
+
 async fn run_play(
     service_account: Option<&std::path::Path>,
     command: PlayCommand,
     dry_run: bool,
 ) -> Result<()> {
     use smbcloud_ascapi_frontend::play;
+    // A bundle dry run is local: no credentials needed, nothing sent.
+    if let PlayCommand::Bundles {
+        command:
+            PlayBundlesCommand::Upload {
+                package,
+                file,
+                track,
+                status,
+                mapping_file,
+                ack_install_warning,
+            },
+    } = &command
+    {
+        if dry_run {
+            let plan = play::plan_bundle_upload(
+                package,
+                track,
+                file,
+                status,
+                mapping_file.as_deref(),
+                *ack_install_warning,
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
+            println!(
+                "# dry run: nothing was sent; the version code is assigned by Play on upload:"
+            );
+            return print_json(&plan);
+        }
+    }
     let client = play::play_client(service_account).map_err(|e| anyhow::anyhow!(e))?;
     let fail = |e: String| anyhow::anyhow!(e);
     match command {
+        PlayCommand::Details { command } => match command {
+            PlayDetailsCommand::Get { package } => {
+                print_json(&play::read_details(&client, &package).await.map_err(fail)?)
+            }
+            PlayDetailsCommand::Update {
+                package,
+                contact_website,
+                contact_email,
+                contact_phone,
+                default_language,
+            } => {
+                let details = PlayDetails {
+                    contact_website,
+                    contact_email,
+                    contact_phone,
+                    default_language,
+                };
+                let result = play::update_details(&client, &package, details, dry_run)
+                    .await
+                    .map_err(fail)?;
+                if result.dry_run {
+                    println!("# dry run: nothing was committed; body that would be sent:");
+                }
+                print_json(&result)
+            }
+        },
         PlayCommand::Listings { command } => match command {
             PlayListingsCommand::List { package } => {
                 print_json(&play::read_listings(&client, &package).await.map_err(fail)?)
@@ -1253,6 +1779,7 @@ async fn run_play(
                 locale,
                 notes,
                 notes_file,
+                changes_not_sent_for_review,
             } => {
                 let notes = text_arg(notes, notes_file, "--notes-file")?
                     .context("--notes or --notes-file is required")?;
@@ -1263,6 +1790,7 @@ async fn run_play(
                     &version_code,
                     &locale,
                     &notes,
+                    changes_not_sent_for_review,
                     dry_run,
                 )
                 .await
@@ -1294,6 +1822,177 @@ async fn run_play(
                 .map_err(fail)?;
                 if result.dry_run {
                     println!("# dry run: the edit was deleted; target track as it would be:");
+                }
+                print_json(&result)
+            }
+            PlayTracksCommand::Rollout {
+                package,
+                track,
+                version_code,
+                fraction,
+                complete,
+                halt,
+                changes_not_sent_for_review,
+            } => {
+                let action = match (fraction, complete, halt) {
+                    (Some(f), false, false) => smbcloud_ascapi_play::RolloutAction::Fraction(f),
+                    (None, true, false) => smbcloud_ascapi_play::RolloutAction::Complete,
+                    (None, false, true) => smbcloud_ascapi_play::RolloutAction::Halt,
+                    _ => anyhow::bail!("pass exactly one of --fraction, --complete, --halt"),
+                };
+                let result = play::rollout_track(
+                    &client,
+                    &package,
+                    &track,
+                    &version_code,
+                    action,
+                    changes_not_sent_for_review,
+                    dry_run,
+                )
+                .await
+                .map_err(fail)?;
+                if result.dry_run {
+                    println!("# dry run: the edit was deleted; track as it would be:");
+                }
+                print_json(&result)
+            }
+            PlayTracksCommand::MaxVersionCode { package } => {
+                let code = play::max_version_code(&client, &package)
+                    .await
+                    .map_err(fail)?;
+                println!("{code}");
+                Ok(())
+            }
+        },
+        PlayCommand::Bundles { command } => match command {
+            PlayBundlesCommand::Upload {
+                package,
+                file,
+                track,
+                status,
+                mapping_file,
+                ack_install_warning,
+            } => {
+                let result = play::upload_bundle(
+                    &client,
+                    &package,
+                    &track,
+                    &file,
+                    &status,
+                    mapping_file.as_deref(),
+                    ack_install_warning,
+                )
+                .await
+                .map_err(fail)?;
+                print_json(&result)
+            }
+        },
+        PlayCommand::Products { command } => match command {
+            PlayProductsCommand::List { package } => {
+                print_json(&play::read_products(&client, &package).await.map_err(fail)?)
+            }
+            PlayProductsCommand::Get {
+                package,
+                product_id,
+            } => print_json(
+                &play::read_product(&client, &package, &product_id)
+                    .await
+                    .map_err(fail)?,
+            ),
+            PlayProductsCommand::Create {
+                package,
+                id,
+                title,
+                description,
+                price,
+                currency,
+                language,
+                option_id,
+            } => {
+                let price = PlayMoney::parse(&currency, &price).map_err(|e| fail(e.to_string()))?;
+                let product = PlayNewProduct {
+                    package,
+                    product_id: id,
+                    language,
+                    title,
+                    description,
+                    purchase_option_id: option_id,
+                };
+                let result = play::create_product(&client, &product, &price, dry_run)
+                    .await
+                    .map_err(fail)?;
+                if result.dry_run {
+                    println!("# dry run: nothing was created; body that would be sent:");
+                }
+                print_json(&result)
+            }
+            PlayProductsCommand::Update {
+                package,
+                product_id,
+                title,
+                description,
+                language,
+                price,
+                currency,
+                purchase_option,
+            } => {
+                let price = price
+                    .map(|p| PlayMoney::parse(&currency, &p))
+                    .transpose()
+                    .map_err(|e| fail(e.to_string()))?;
+                let changes = smbcloud_ascapi_play::ProductChanges {
+                    title,
+                    description,
+                    language,
+                    price,
+                    purchase_option,
+                };
+                let result =
+                    play::update_product(&client, &package, &product_id, &changes, dry_run)
+                        .await
+                        .map_err(fail)?;
+                if result.dry_run {
+                    println!("# dry run: nothing was changed; patch that would be sent:");
+                }
+                print_json(&result)
+            }
+            PlayProductsCommand::Activate {
+                package,
+                product_id,
+                purchase_option,
+            } => {
+                let result = play::set_purchase_option_active(
+                    &client,
+                    &package,
+                    &product_id,
+                    purchase_option.as_deref(),
+                    true,
+                    dry_run,
+                )
+                .await
+                .map_err(fail)?;
+                if result.dry_run {
+                    println!("# dry run: nothing was changed:");
+                }
+                print_json(&result)
+            }
+            PlayProductsCommand::Deactivate {
+                package,
+                product_id,
+                purchase_option,
+            } => {
+                let result = play::set_purchase_option_active(
+                    &client,
+                    &package,
+                    &product_id,
+                    purchase_option.as_deref(),
+                    false,
+                    dry_run,
+                )
+                .await
+                .map_err(fail)?;
+                if result.dry_run {
+                    println!("# dry run: nothing was changed:");
                 }
                 print_json(&result)
             }
@@ -1754,6 +2453,128 @@ enum AppPricesCommand {
     },
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum CliInAppPurchaseType {
+    Consumable,
+    NonConsumable,
+    NonRenewingSubscription,
+}
+
+impl From<CliInAppPurchaseType> for InAppPurchaseType {
+    fn from(value: CliInAppPurchaseType) -> Self {
+        match value {
+            CliInAppPurchaseType::Consumable => InAppPurchaseType::Consumable,
+            CliInAppPurchaseType::NonConsumable => InAppPurchaseType::NonConsumable,
+            CliInAppPurchaseType::NonRenewingSubscription => {
+                InAppPurchaseType::NonRenewingSubscription
+            }
+        }
+    }
+}
+
+#[derive(Subcommand)]
+enum InAppPurchasesCommand {
+    /// Every in-app purchase of an app, with its state.
+    List { app_id: String },
+    /// One product with everything that decides whether it can be
+    /// submitted: localizations, manual price, territories, screenshot.
+    Get { id: String },
+    /// Create a product. The product id is permanent and can never be
+    /// reused by this account, even after the product is deleted.
+    Create {
+        app_id: String,
+        /// The id the app asks the store for, e.g. `onde.unlock`.
+        #[arg(long)]
+        product_id: String,
+        /// Reference name, seen only in App Store Connect (max 64).
+        #[arg(long)]
+        name: String,
+        #[arg(long, value_enum)]
+        r#type: CliInAppPurchaseType,
+        /// Let Family Sharing members use the purchase. Can only be
+        /// turned on later, never off, so it is off unless given.
+        #[arg(long)]
+        family_sharable: bool,
+        #[arg(long, conflicts_with = "review_note_file")]
+        review_note: Option<String>,
+        #[arg(long)]
+        review_note_file: Option<PathBuf>,
+    },
+    /// Change the reference name or the review note.
+    Update {
+        id: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long, conflicts_with = "review_note_file")]
+        review_note: Option<String>,
+        #[arg(long)]
+        review_note_file: Option<PathBuf>,
+    },
+    /// Set the display name and description for one locale, creating the
+    /// localization or updating the one that exists.
+    Localize {
+        id: String,
+        /// e.g. `en-US`.
+        #[arg(long)]
+        locale: String,
+        /// Display name on the purchase sheet (max 30).
+        #[arg(long)]
+        name: String,
+        /// Description on the purchase sheet (max 45).
+        #[arg(long)]
+        description: Option<String>,
+    },
+    /// The price points Apple offers in a territory.
+    PricePoints {
+        id: String,
+        #[arg(long, default_value = "USA")]
+        territory: String,
+    },
+    /// Set one manual price in a base territory; Apple derives the rest.
+    SetPrice {
+        id: String,
+        #[arg(long, default_value = "USA")]
+        territory: String,
+        /// The customer price exactly as Apple writes it, e.g. `4.99`.
+        #[arg(long)]
+        price: String,
+    },
+    /// Choose the storefronts the product is sold in. Replaces the set.
+    SetAvailability {
+        id: String,
+        /// Every storefront App Store Connect lists.
+        #[arg(
+            long,
+            conflicts_with = "territory",
+            required_unless_present = "territory"
+        )]
+        all_territories: bool,
+        /// One storefront code; repeat for more.
+        #[arg(long)]
+        territory: Vec<String>,
+        /// Don't add storefronts Apple opens later.
+        #[arg(long)]
+        no_new_territories: bool,
+    },
+    /// Upload the screenshot App Review asks for (the purchase as it
+    /// appears in the app). Replaces an existing one only with --replace.
+    ReviewScreenshot {
+        id: String,
+        path: PathBuf,
+        #[arg(long)]
+        replace: bool,
+    },
+    /// Upload the 1024x1024 promotional image the App Store shows for the
+    /// product. A product can hold several; --replace deletes the existing
+    /// ones first.
+    PromotionalImage {
+        id: String,
+        path: PathBuf,
+        #[arg(long)]
+        replace: bool,
+    },
+}
+
 #[derive(Subcommand)]
 enum AppsCommand {
     /// `GET /v1/apps`.
@@ -1847,6 +2668,12 @@ enum AppsCommand {
         /// Give up after this many seconds without a terminal state.
         #[arg(long, default_value_t = 30 * 60)]
         timeout: u64,
+        /// Once the build is VALID, answer export compliance with this value
+        /// if (and only if) the build has no answer yet. `false`: no
+        /// encryption beyond what Apple's OS provides. An answer already on
+        /// the build is left alone. The build is read back after a write.
+        #[arg(long, action = clap::ArgAction::Set)]
+        uses_non_exempt_encryption: Option<bool>,
     },
 }
 
@@ -1899,6 +2726,30 @@ enum AppStoreVersionsCommand {
         version_string: Option<String>,
         #[arg(long)]
         copyright: Option<String>,
+        /// How the approved version goes live: `manual` waits in
+        /// PENDING_DEVELOPER_RELEASE for `app-store-versions release`,
+        /// `after-approval` goes live at once, `scheduled` needs
+        /// `--earliest-release-date`. Read back after the update.
+        #[arg(long, value_enum)]
+        release_type: Option<CliReleaseType>,
+        /// When a scheduled version may go live, ISO 8601 with an offset,
+        /// e.g. 2026-11-10T09:00:00+01:00.
+        #[arg(long)]
+        earliest_release_date: Option<String>,
+    },
+    /// `POST /v1/appStoreVersionReleaseRequests` — release an approved
+    /// version. Refuses unless the version is PENDING_DEVELOPER_RELEASE
+    /// (set `--release-type manual` before submitting), then reads its state
+    /// back.
+    Release { id: String },
+    /// Create, pause, resume or complete a version's phased release
+    /// (`appStoreVersionPhasedReleases`), then read it back. `create` makes
+    /// it INACTIVE; it turns ACTIVE when the version is released. With
+    /// `--dry-run` the current state is read and the body is printed.
+    PhasedRelease {
+        id: String,
+        #[arg(value_enum)]
+        action: CliPhasedReleaseAction,
     },
     /// `DELETE /v1/appStoreVersions/{id}`.
     Delete { id: String },
@@ -2146,6 +2997,42 @@ impl From<CliPlatform> for Platform {
             CliPlatform::MacOs => Platform::MacOs,
             CliPlatform::TvOs => Platform::TvOs,
             CliPlatform::VisionOs => Platform::VisionOs,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliReleaseType {
+    Manual,
+    AfterApproval,
+    Scheduled,
+}
+
+impl From<CliReleaseType> for ReleaseType {
+    fn from(value: CliReleaseType) -> Self {
+        match value {
+            CliReleaseType::Manual => ReleaseType::Manual,
+            CliReleaseType::AfterApproval => ReleaseType::AfterApproval,
+            CliReleaseType::Scheduled => ReleaseType::Scheduled,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliPhasedReleaseAction {
+    Create,
+    Pause,
+    Resume,
+    Complete,
+}
+
+impl From<CliPhasedReleaseAction> for PhasedReleaseAction {
+    fn from(value: CliPhasedReleaseAction) -> Self {
+        match value {
+            CliPhasedReleaseAction::Create => PhasedReleaseAction::Create,
+            CliPhasedReleaseAction::Pause => PhasedReleaseAction::Pause,
+            CliPhasedReleaseAction::Resume => PhasedReleaseAction::Resume,
+            CliPhasedReleaseAction::Complete => PhasedReleaseAction::Complete,
         }
     }
 }
@@ -2432,12 +3319,35 @@ async fn main() -> Result<()> {
         .await;
     }
 
+    if let Some(Command::Admob {
+        admob_oauth_client,
+        account,
+        command,
+    }) = cli.command
+    {
+        return run_admob(
+            admob_oauth_client.as_deref(),
+            account.as_deref(),
+            command,
+            cli.dry_run,
+        )
+        .await;
+    }
+
     if let Some(Command::Play {
         play_service_account,
         command,
     }) = cli.command
     {
         return run_play(play_service_account.as_deref(), command, cli.dry_run).await;
+    }
+
+    if let Some(Command::Amazon {
+        credentials,
+        command,
+    }) = cli.command
+    {
+        return run_amazon(credentials.as_deref(), command, cli.dry_run).await;
     }
 
     if let Some(Command::Msstore {
@@ -2479,7 +3389,11 @@ async fn main() -> Result<()> {
     };
 
     match command {
-        Command::AppGallery { .. } | Command::Msstore { .. } | Command::Play { .. } => {
+        Command::AppGallery { .. }
+        | Command::Amazon { .. }
+        | Command::Msstore { .. }
+        | Command::Play { .. }
+        | Command::Admob { .. } => {
             unreachable!("handled before App Store Connect credentials")
         }
         Command::Apps { command } => run_apps(&client, &altool_auth, command, cli.dry_run).await,
@@ -2503,6 +3417,9 @@ async fn main() -> Result<()> {
             run_app_screenshots(&client, command, cli.dry_run).await
         }
         Command::AppPrices { command } => run_app_prices(&client, command).await,
+        Command::InAppPurchases { command } => {
+            run_in_app_purchases(&client, command, cli.dry_run).await
+        }
         Command::Certificates { command } => run_certificates(&client, command, cli.dry_run).await,
         Command::Profiles { command } => run_profiles(&client, command, cli.dry_run).await,
         Command::ReviewSubmissions { command } => {
@@ -2804,6 +3721,7 @@ async fn run_apps(
             pre_release_version,
             interval,
             timeout,
+            uses_non_exempt_encryption,
         } => {
             let filter = BuildFilter {
                 version,
@@ -2817,7 +3735,19 @@ async fn run_apps(
             let outcome = await_processing(client, &app_id, &filter, config)
                 .await
                 .map_err(anyhow::Error::msg)?;
-            print_json(&outcome)?;
+            match uses_non_exempt_encryption {
+                Some(answer) if outcome.valid => {
+                    let compliance =
+                        answer_missing_compliance(client, &outcome.build_id, answer, dry_run)
+                            .await
+                            .map_err(anyhow::Error::msg)?;
+                    print_json(&serde_json::json!({
+                        "build": outcome,
+                        "compliance": compliance,
+                    }))?;
+                }
+                _ => print_json(&outcome)?,
+            }
             if outcome.timed_out {
                 anyhow::bail!(
                     "timed out after {}s waiting for processing",
@@ -2977,21 +3907,61 @@ async fn run_app_store_versions(
             id,
             version_string,
             copyright,
+            release_type,
+            earliest_release_date,
         } => {
-            if version_string.is_none() && copyright.is_none() {
-                anyhow::bail!("nothing to update: pass --version-string and/or --copyright");
+            if version_string.is_none()
+                && copyright.is_none()
+                && release_type.is_none()
+                && earliest_release_date.is_none()
+            {
+                anyhow::bail!(
+                    "nothing to update: pass --version-string, --copyright, --release-type and/or --earliest-release-date"
+                );
             }
+            let release_type = release_type.map(ReleaseType::from);
+            release_controls::validate_release_controls(
+                release_type,
+                earliest_release_date.as_deref(),
+            )
+            .map_err(anyhow::Error::msg)?;
             if let Some(version_string) = version_string.as_deref() {
                 validate_version_string(version_string)?;
             }
             let fields = AppStoreVersionUpdateFields {
                 version_string,
                 copyright,
+                release_type,
+                earliest_release_date,
             };
             if dry_run_guard(dry_run, &fields)? {
                 return Ok(());
             }
-            print_json(&client.update_app_store_version(&id, fields).await?)
+            // The version read back after the update, which is what proves
+            // the release type took.
+            print_json(
+                &release_controls::update_release_controls(client, &id, fields)
+                    .await
+                    .map_err(anyhow::Error::msg)?,
+            )
+        }
+        AppStoreVersionsCommand::Release { id } => {
+            let outcome = release_controls::release_version(client, &id, dry_run)
+                .await
+                .map_err(anyhow::Error::msg)?;
+            if outcome.dry_run {
+                println!("# dry run — request body that would be sent:");
+            }
+            print_json(&outcome)
+        }
+        AppStoreVersionsCommand::PhasedRelease { id, action } => {
+            let outcome = release_controls::phased_release(client, &id, action.into(), dry_run)
+                .await
+                .map_err(anyhow::Error::msg)?;
+            if outcome.dry_run {
+                println!("# dry run — request body that would be sent:");
+            }
+            print_json(&outcome)
         }
         AppStoreVersionsCommand::Delete { id } => {
             if dry_run {
@@ -3409,6 +4379,359 @@ async fn run_app_prices(client: &Client, command: AppPricesCommand) -> Result<()
                 .list_app_prices(&app_id, kind, territory.as_deref())
                 .await?;
             print_json(&prices)
+        }
+    }
+}
+
+fn check_len(field: &str, value: &str, max: usize) -> Result<()> {
+    let len = value.chars().count();
+    if len > max {
+        anyhow::bail!("{field} is {len} characters; App Store Connect allows {max}");
+    }
+    Ok(())
+}
+
+async fn run_in_app_purchases(
+    client: &Client,
+    command: InAppPurchasesCommand,
+    dry_run: bool,
+) -> Result<()> {
+    use smbcloud_ascapi_iap::{availability, in_app_purchase, localization, price};
+    match command {
+        InAppPurchasesCommand::List { app_id } => {
+            print_json(&client.list_in_app_purchases(&app_id).await?)
+        }
+        InAppPurchasesCommand::Get { id } => {
+            let product = client.get_in_app_purchase(&id).await?;
+            let localizations = client.list_in_app_purchase_localizations(&id).await?;
+            let manual_prices = client.list_manual_prices(&id).await?;
+            let availability = client.get_in_app_purchase_availability(&id).await?;
+            let screenshot = client.get_review_screenshot(&id).await?;
+            let images = client.list_promotional_images(&id).await?;
+            print_json(&serde_json::json!({
+                "product": product,
+                "localizations": localizations,
+                "manualPrices": manual_prices,
+                "availability": availability,
+                "reviewScreenshot": screenshot,
+                "promotionalImages": images,
+            }))
+        }
+        InAppPurchasesCommand::Create {
+            app_id,
+            product_id,
+            name,
+            r#type,
+            family_sharable,
+            review_note,
+            review_note_file,
+        } => {
+            check_len("--name", &name, in_app_purchase::NAME_MAX_LEN)?;
+            let review_note = text_arg(review_note, review_note_file, "--review-note-file")?;
+            if let Some(note) = &review_note {
+                check_len("--review-note", note, in_app_purchase::REVIEW_NOTE_MAX_LEN)?;
+            }
+            let existing = client.list_in_app_purchases(&app_id).await?;
+            if let Some(found) = existing
+                .iter()
+                .find(|p| p.attributes.product_id.as_deref() == Some(product_id.as_str()))
+            {
+                anyhow::bail!(
+                    "{product_id} already exists on this app (id {}); use `update`",
+                    found.id
+                );
+            }
+            let attributes = InAppPurchaseCreateAttributes {
+                name,
+                product_id,
+                in_app_purchase_type: r#type.into(),
+                review_note,
+                family_sharable: Some(family_sharable),
+            };
+            let body = in_app_purchase::create_body(&app_id, attributes.clone());
+            if dry_run_guard(dry_run, &body)? {
+                return Ok(());
+            }
+            let created = client
+                .create_in_app_purchase(&app_id, attributes.clone())
+                .await?;
+            let back = client.get_in_app_purchase(&created.id).await?;
+            if back.attributes.product_id.as_deref() != Some(attributes.product_id.as_str()) {
+                anyhow::bail!(
+                    "created {} but reading it back shows a different product id",
+                    created.id
+                );
+            }
+            print_json(&back)
+        }
+        InAppPurchasesCommand::Update {
+            id,
+            name,
+            review_note,
+            review_note_file,
+        } => {
+            let review_note = text_arg(review_note, review_note_file, "--review-note-file")?;
+            if let Some(name) = &name {
+                check_len("--name", name, in_app_purchase::NAME_MAX_LEN)?;
+            }
+            if let Some(note) = &review_note {
+                check_len("--review-note", note, in_app_purchase::REVIEW_NOTE_MAX_LEN)?;
+            }
+            if name.is_none() && review_note.is_none() {
+                anyhow::bail!("nothing to change: pass --name or --review-note");
+            }
+            let update = InAppPurchaseUpdateAttributes {
+                name,
+                review_note,
+                family_sharable: None,
+            };
+            let body = in_app_purchase::update_body(&id, update.clone());
+            if dry_run_guard(dry_run, &body)? {
+                return Ok(());
+            }
+            client.update_in_app_purchase(&id, update.clone()).await?;
+            let back = client.get_in_app_purchase(&id).await?;
+            if update.name.is_some() && back.attributes.name != update.name
+                || update.review_note.is_some() && back.attributes.review_note != update.review_note
+            {
+                anyhow::bail!("updated {id} but reading it back does not match what was sent");
+            }
+            print_json(&back)
+        }
+        InAppPurchasesCommand::Localize {
+            id,
+            locale,
+            name,
+            description,
+        } => {
+            check_len("--name", &name, localization::NAME_MAX_LEN)?;
+            if let Some(d) = &description {
+                check_len("--description", d, localization::DESCRIPTION_MAX_LEN)?;
+            }
+            let existing = client
+                .list_in_app_purchase_localizations(&id)
+                .await?
+                .into_iter()
+                .find(|l| l.attributes.locale.as_deref() == Some(locale.as_str()));
+            let written = match existing {
+                Some(found) => {
+                    let update = LocalizationUpdate {
+                        name: Some(name.clone()),
+                        description: description.clone(),
+                    };
+                    if dry_run_guard(
+                        dry_run,
+                        &localization::update_body(&found.id, update.clone()),
+                    )? {
+                        return Ok(());
+                    }
+                    client
+                        .update_in_app_purchase_localization(&found.id, update)
+                        .await?
+                }
+                None => {
+                    let body =
+                        localization::create_body(&id, &locale, &name, description.as_deref());
+                    if dry_run_guard(dry_run, &body)? {
+                        return Ok(());
+                    }
+                    client
+                        .create_in_app_purchase_localization(
+                            &id,
+                            &locale,
+                            &name,
+                            description.as_deref(),
+                        )
+                        .await?
+                }
+            };
+            let back = client
+                .list_in_app_purchase_localizations(&id)
+                .await?
+                .into_iter()
+                .find(|l| l.id == written.id)
+                .context("the localization was written but is missing when read back")?;
+            if back.attributes.name.as_deref() != Some(name.as_str())
+                || description.is_some() && back.attributes.description != description
+            {
+                anyhow::bail!(
+                    "localization {} reads back differently from what was sent",
+                    back.id
+                );
+            }
+            print_json(&back)
+        }
+        InAppPurchasesCommand::PricePoints { id, territory } => {
+            let territory = territory.to_uppercase();
+            let points = client.list_price_points(&id, &territory).await?;
+            let rows: Vec<_> = points
+                .iter()
+                .map(|p| {
+                    serde_json::json!({
+                        "id": p.id,
+                        "customerPrice": p.attributes.customer_price,
+                        "proceeds": p.attributes.proceeds,
+                    })
+                })
+                .collect();
+            print_json(&rows)
+        }
+        InAppPurchasesCommand::SetPrice {
+            id,
+            territory,
+            price: amount,
+        } => {
+            let territory = territory.to_uppercase();
+            let Some(point) = client.find_price_point(&id, &territory, &amount).await? else {
+                anyhow::bail!(
+                    "{amount} is not one of Apple's price points in {territory}; \
+                     `asc in-app-purchases price-points {id} --territory {territory}` lists them"
+                );
+            };
+            let body = price::schedule_body(&id, &territory, &point.id);
+            if dry_run_guard(dry_run, &body)? {
+                return Ok(());
+            }
+            client
+                .set_price_schedule(&id, &territory, &point.id)
+                .await?;
+            let prices = client.list_manual_prices(&id).await?;
+            let matches = prices.iter().any(|p| {
+                p.territory.as_deref() == Some(territory.as_str())
+                    && p.customer_price.as_deref() == Some(amount.as_str())
+            });
+            if !matches {
+                anyhow::bail!(
+                    "the price schedule was posted but reads back without {amount} in {territory}"
+                );
+            }
+            print_json(&prices)
+        }
+        InAppPurchasesCommand::SetAvailability {
+            id,
+            all_territories,
+            territory,
+            no_new_territories,
+        } => {
+            let mut codes: Vec<String> = if all_territories {
+                client
+                    .list_territories()
+                    .await?
+                    .into_iter()
+                    .map(|t| t.id)
+                    .collect()
+            } else {
+                territory.iter().map(|t| t.to_uppercase()).collect()
+            };
+            codes.sort();
+            codes.dedup();
+            let body = availability::availability_body(&id, &codes, !no_new_territories);
+            if dry_run_guard(dry_run, &body)? {
+                return Ok(());
+            }
+            client
+                .set_in_app_purchase_availability(&id, &codes, !no_new_territories)
+                .await?;
+            let back = client
+                .get_in_app_purchase_availability(&id)
+                .await?
+                .context("availability was posted but reads back as unset")?;
+            if back.available_in_new_territories != Some(!no_new_territories) {
+                anyhow::bail!(
+                    "availability reads back with availableInNewTerritories = {:?}, {} was sent",
+                    back.available_in_new_territories,
+                    !no_new_territories
+                );
+            }
+            if back.territories != codes {
+                anyhow::bail!(
+                    "availability reads back with {} territories, {} were sent",
+                    back.territories.len(),
+                    codes.len()
+                );
+            }
+            print_json(&back)
+        }
+        InAppPurchasesCommand::ReviewScreenshot { id, path, replace } => {
+            let bytes =
+                std::fs::read(&path).with_context(|| format!("cannot read {}", path.display()))?;
+            let file_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .context("the screenshot path has no file name")?
+                .to_string();
+            let existing = client.get_review_screenshot(&id).await?;
+            if let (Some(old), false) = (&existing, replace) {
+                anyhow::bail!(
+                    "{id} already has a review screenshot ({}); pass --replace",
+                    old.id
+                );
+            }
+            if dry_run {
+                println!(
+                    "# dry run: would {}upload {file_name} ({} bytes) as the review screenshot of {id}",
+                    if existing.is_some() { "delete the current screenshot and " } else { "" },
+                    bytes.len()
+                );
+                return Ok(());
+            }
+            if let Some(old) = existing {
+                client.delete_review_screenshot(&old.id).await?;
+            }
+            let uploaded = client
+                .upload_review_screenshot(&id, file_name, bytes)
+                .await?;
+            let back = client
+                .get_review_screenshot(&id)
+                .await?
+                .context("the screenshot was committed but reads back as missing")?;
+            if back.id != uploaded.id {
+                anyhow::bail!(
+                    "a different screenshot reads back ({}) than the one uploaded ({})",
+                    back.id,
+                    uploaded.id
+                );
+            }
+            print_json(&back)
+        }
+        InAppPurchasesCommand::PromotionalImage { id, path, replace } => {
+            let bytes =
+                std::fs::read(&path).with_context(|| format!("cannot read {}", path.display()))?;
+            let file_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .context("the image path has no file name")?
+                .to_string();
+            let existing = client.list_promotional_images(&id).await?;
+            if !existing.is_empty() && !replace {
+                anyhow::bail!(
+                    "{id} already has {} promotional image(s); pass --replace",
+                    existing.len()
+                );
+            }
+            if dry_run {
+                println!(
+                    "# dry run: would {}upload {file_name} ({} bytes) as a promotional image of {id}",
+                    if existing.is_empty() { "" } else { "delete the current images and " },
+                    bytes.len()
+                );
+                return Ok(());
+            }
+            for old in &existing {
+                client.delete_promotional_image(&old.id).await?;
+            }
+            let uploaded = client
+                .upload_promotional_image(&id, file_name, bytes)
+                .await?;
+            let back = client.list_promotional_images(&id).await?;
+            if !back.iter().any(|i| i.id == uploaded.id) {
+                anyhow::bail!(
+                    "the image was committed but {} does not list it ({})",
+                    id,
+                    uploaded.id
+                );
+            }
+            print_json(&back)
         }
     }
 }
