@@ -8,6 +8,7 @@ members = [
     "crates/appgallery",
     "crates/amazon",
     "crates/msstore",
+    "crates/xiaomi",
     "crates/signing",
     "crates/pricing",
     "crates/iap",
@@ -32,6 +33,7 @@ smbcloud-ascapi-admob = { version = "0.3.0", path = "crates/admob" }
 smbcloud-ascapi-amazon = { version = "0.3.0", path = "crates/amazon" }
 smbcloud-ascapi-appgallery = { version = "0.3.0", path = "crates/appgallery" }
 smbcloud-ascapi-msstore = { version = "0.3.0", path = "crates/msstore" }
+smbcloud-ascapi-xiaomi = { version = "0.3.0", path = "crates/xiaomi" }
 smbcloud-ascapi-signing = { version = "0.3.0", path = "crates/signing" }
 smbcloud-ascapi-pricing = { version = "0.3.0", path = "crates/pricing" }
 smbcloud-ascapi-iap = { version = "0.3.0", path = "crates/iap" }
