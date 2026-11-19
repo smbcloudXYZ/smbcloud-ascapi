@@ -996,6 +996,10 @@ enum MsStoreSubmissionsCommand {
         #[arg(long)]
         product_id: Option<String>,
         /// Refuse unless a shipping package has this version, e.g. 1.3.2.0.
+        /// Before the commit, an uploaded package still pending ingestion has
+        /// no version in Partner Center, so it is matched by the version in
+        /// its file name (siGit-1.3.2.0.msix). After the commit the Store's
+        /// own version is compared exactly and a mismatch is an error.
         #[arg(long)]
         expect_package_version: Option<String>,
         /// How long to wait for the status to leave CommitStarted.

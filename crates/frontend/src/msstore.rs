@@ -397,6 +397,64 @@ pub fn package_versions(submission: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// File names of the packages that will ship but have no `version` yet. A
+/// package in `PendingUpload` gets its version only when the commit ingests
+/// it, so before the commit the file name is all there is to go on.
+pub fn pending_file_names(submission: &Value) -> Vec<String> {
+    submission
+        .get("applicationPackages")
+        .and_then(Value::as_array)
+        .map(|packages| {
+            packages
+                .iter()
+                .filter(|p| str_at(p, "/fileStatus") != Some("PendingDelete"))
+                .filter(|p| str_at(p, "/version").is_none())
+                .filter_map(|p| str_at(p, "/fileName").map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Every dotted number in a file name, whole: `siGit-1.3.2.0.msix` gives
+/// `1.3.2.0`, and `x64_11.3.2.0.msixupload` gives `11.3.2.0`, never `1.3.2.0`.
+pub fn versions_in_file_name(name: &str) -> Vec<&str> {
+    name.split(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .map(|run| run.trim_matches('.'))
+        .filter(|run| run.contains('.'))
+        .collect()
+}
+
+/// The guard behind `--expect-package-version`, before the commit. An
+/// ingested package is matched by its `version`; a package still pending
+/// upload has none, so it is matched by the version in its file name.
+pub fn check_expected_version(submission: &Value, expected: &str) -> Result<(), String> {
+    let versions = package_versions(submission);
+    if versions.iter().any(|v| v == expected) {
+        return Ok(());
+    }
+    let pending = pending_file_names(submission);
+    if pending
+        .iter()
+        .any(|name| versions_in_file_name(name).contains(&expected))
+    {
+        return Ok(());
+    }
+    if !pending.is_empty()
+        && versions.is_empty()
+        && pending.iter().all(|n| versions_in_file_name(n).is_empty())
+    {
+        return Err(format!(
+            "the pending package [{}] has no version yet and its file name does not carry one, so {expected} cannot be checked; nothing was committed",
+            pending.join(", ")
+        ));
+    }
+    Err(format!(
+        "submission carries package versions [{}] and pending packages [{}], not {expected}; nothing was committed",
+        versions.join(", "),
+        pending.join(", ")
+    ))
+}
+
 /// The error messages of a status record, for a `...Failed` status.
 fn status_errors(status: &Value) -> Vec<String> {
     status
@@ -423,6 +481,11 @@ pub struct Committed {
     pub noop: bool,
     pub submission_id: String,
     pub package_versions: Vec<String>,
+    /// Files still pending upload before the commit, matched by name.
+    pub pending_uploads: Vec<String>,
+    /// Versions the Store reports after the commit, once it has ingested the
+    /// packages. `None` on a dry run or no-op, or while it still reports none.
+    pub package_versions_after: Option<Vec<String>>,
     /// The status before this call.
     pub status_before: String,
     /// The status after the commit and the wait. `None` on a dry run or no-op.
@@ -432,8 +495,10 @@ pub struct Committed {
 /// Commit the pending submission to certification.
 ///
 /// Fails closed before writing when there is no pending submission or, with
-/// `expect_package_version`, when no shipping package has that version. A
-/// submission already committed is a no-op. After the commit the status is
+/// `expect_package_version`, when no shipping package has that version (see
+/// [`check_expected_version`]; a package still pending upload is matched by
+/// its file name). After the commit the Store's own `version` is checked
+/// strictly. A submission already committed is a no-op. After the commit the status is
 /// polled until it leaves `CommitStarted` or `wait_seconds` runs out; a status
 /// ending in `Failed` is an error carrying the status details.
 pub async fn commit_pending(
@@ -450,32 +515,30 @@ pub async fn commit_pending(
         .to_string();
     let submission = client.get_submission(product_id, &id).await.map_err(err)?;
     let versions = package_versions(&submission);
+    let pending_uploads = pending_file_names(&submission);
     if let Some(expected) = expect_package_version {
-        if !versions.iter().any(|v| v == expected) {
-            return Err(format!(
-                "submission {id} carries package versions [{}], not {expected}; nothing was committed",
-                versions.join(", ")
-            ));
-        }
+        check_expected_version(&submission, expected)?;
     }
     let status = client
         .submission_status(product_id, &id)
         .await
         .map_err(err)?;
     let before = str_at(&status, "/status").unwrap_or("").to_string();
-    let result = |noop, after| Committed {
+    let result = |noop, after, versions_after| Committed {
         dry_run,
         noop,
         submission_id: id.clone(),
         package_versions: versions.clone(),
+        pending_uploads: pending_uploads.clone(),
+        package_versions_after: versions_after,
         status_before: before.clone(),
         status_after: after,
     };
     if is_past_commit(&before) {
-        return Ok(result(true, None));
+        return Ok(result(true, None, None));
     }
     if dry_run {
-        return Ok(result(false, None));
+        return Ok(result(false, None, None));
     }
     client
         .commit_submission(product_id, &id)
@@ -496,7 +559,21 @@ pub async fn commit_pending(
             ));
         }
         if current != "CommitStarted" || std::time::Instant::now() >= deadline {
-            return Ok(result(false, Some(current)));
+            // The Store has ingested the packages by now, so `version` is
+            // there and the strict comparison applies. An empty list means
+            // the wait ran out first: unknown, not a mismatch.
+            let after = client.get_submission(product_id, &id).await.map_err(err)?;
+            let after_versions = package_versions(&after);
+            if let Some(expected) = expect_package_version {
+                if !after_versions.is_empty() && !after_versions.iter().any(|v| v == expected) {
+                    return Err(format!(
+                        "submission {id} was committed (status {current}) but carries package versions [{}], not {expected}",
+                        after_versions.join(", ")
+                    ));
+                }
+            }
+            let reported = (!after_versions.is_empty()).then_some(after_versions);
+            return Ok(result(false, Some(current), reported));
         }
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     }
@@ -518,6 +595,54 @@ mod tests {
     fn package_versions_skip_packages_pending_delete() {
         assert_eq!(package_versions(&submission()), vec!["1.3.2.0", "1.3.2.0"]);
         assert!(package_versions(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn pending_upload_is_matched_by_file_name() {
+        let draft = serde_json::json!({"applicationPackages": [
+            {"fileName": "siGit-1.3.2.0.msix", "fileStatus": "PendingUpload"}]});
+        assert!(package_versions(&draft).is_empty());
+        assert_eq!(pending_file_names(&draft), vec!["siGit-1.3.2.0.msix"]);
+        assert!(check_expected_version(&draft, "1.3.2.0").is_ok());
+    }
+
+    #[test]
+    fn pending_upload_with_another_version_is_a_mismatch() {
+        let draft = serde_json::json!({"applicationPackages": [
+            {"fileName": "siGit-1.3.1.0.msix", "fileStatus": "PendingUpload"}]});
+        let error = check_expected_version(&draft, "1.3.2.0").unwrap_err();
+        assert!(error.contains("siGit-1.3.1.0.msix") && error.contains("not 1.3.2.0"));
+    }
+
+    #[test]
+    fn pending_upload_without_a_version_in_its_name_cannot_be_checked() {
+        let draft = serde_json::json!({"applicationPackages": [
+            {"fileName": "release.msix", "fileStatus": "PendingUpload"}]});
+        let error = check_expected_version(&draft, "1.3.2.0").unwrap_err();
+        assert!(error.contains("has no version yet"));
+    }
+
+    #[test]
+    fn file_name_versions_are_matched_whole() {
+        assert_eq!(versions_in_file_name("siGit-1.3.2.0.msix"), vec!["1.3.2.0"]);
+        assert_eq!(
+            versions_in_file_name("x64_1.3.2.0.msixupload"),
+            vec!["1.3.2.0"]
+        );
+        assert_eq!(versions_in_file_name("x64_11.3.2.0.msix"), vec!["11.3.2.0"]);
+        assert_eq!(versions_in_file_name("a-1.3.2.01.msix"), vec!["1.3.2.01"]);
+        assert!(versions_in_file_name("release.msix").is_empty());
+        for name in ["x64_11.3.2.0.msix", "a-1.3.2.01.msix"] {
+            let draft = serde_json::json!({"applicationPackages": [
+                {"fileName": name, "fileStatus": "PendingUpload"}]});
+            assert!(check_expected_version(&draft, "1.3.2.0").is_err());
+        }
+    }
+
+    #[test]
+    fn ingested_package_is_still_checked_by_version() {
+        assert!(check_expected_version(&submission(), "1.3.2.0").is_ok());
+        assert!(check_expected_version(&submission(), "1.3.1.0").is_err());
     }
 
     #[test]
