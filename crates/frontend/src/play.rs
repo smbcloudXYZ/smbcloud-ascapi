@@ -611,6 +611,122 @@ pub async fn upload_bundle(
     })
 }
 
+/// The APKs Play generated for a version code, as Play returns them.
+pub async fn read_generated_apks(
+    client: &PlayClient,
+    package: &str,
+    version_code: u64,
+) -> Result<serde_json::Value, String> {
+    client
+        .list_generated_apks(package, version_code)
+        .await
+        .map_err(err)
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UniversalApk {
+    pub dry_run: bool,
+    pub version_code: u64,
+    /// SHA-256 of the certificate the APK is signed with (Play's app signing
+    /// key), as Play reports it.
+    pub certificate_sha256: String,
+    pub download_id: String,
+    pub path: PathBuf,
+    /// Size and SHA-256 of the written file; absent on a dry run.
+    pub bytes: Option<usize>,
+    pub sha256: Option<String>,
+}
+
+/// Pick the universal APK out of a `generatedapks.list` answer. With more
+/// than one signing certificate, `certificate` (a SHA-256, any case) must
+/// name one.
+fn pick_universal(
+    list: &serde_json::Value,
+    certificate: Option<&str>,
+) -> Result<(String, String), String> {
+    let entries = list
+        .get("generatedApks")
+        .and_then(|v| v.as_array())
+        .filter(|a| !a.is_empty())
+        .ok_or("Play generated no APKs for this version code (is it a bundle Play processed?)")?;
+    let candidates: Vec<(String, String)> = entries
+        .iter()
+        .filter_map(|e| {
+            let cert = e.get("certificateSha256Hash")?.as_str()?.to_string();
+            let id = e
+                .pointer("/generatedUniversalApk/downloadId")?
+                .as_str()?
+                .to_string();
+            Some((cert, id))
+        })
+        .collect();
+    let chosen: Vec<_> = match certificate {
+        Some(want) => candidates
+            .into_iter()
+            .filter(|(c, _)| c.eq_ignore_ascii_case(want))
+            .collect(),
+        None => candidates,
+    };
+    match chosen.len() {
+        0 => Err(match certificate {
+            Some(want) => format!("no universal APK signed with certificate {want}"),
+            None => "Play listed no universal APK for this version code".to_string(),
+        }),
+        1 => Ok(chosen.into_iter().next().expect("one element")),
+        n => Err(format!(
+            "{n} signing certificates have a universal APK; pass --certificate with one of: {}",
+            chosen
+                .iter()
+                .map(|(c, _)| c.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+}
+
+/// Download the universal APK Play generated and signed for `version_code`
+/// and write it to `out`. Refuses to overwrite a file. A dry run lists the
+/// APKs and writes nothing.
+pub async fn download_universal_apk(
+    client: &PlayClient,
+    package: &str,
+    version_code: u64,
+    out: &Path,
+    certificate: Option<&str>,
+    dry_run: bool,
+) -> Result<UniversalApk, String> {
+    // A dry run writes nothing, so an existing file is no reason to stop it.
+    if !dry_run && out.exists() {
+        return Err(format!("{} exists; not overwriting it", out.display()));
+    }
+    let list = read_generated_apks(client, package, version_code).await?;
+    let (certificate_sha256, download_id) = pick_universal(&list, certificate)?;
+    let mut result = UniversalApk {
+        dry_run,
+        version_code,
+        certificate_sha256,
+        download_id,
+        path: out.to_path_buf(),
+        bytes: None,
+        sha256: None,
+    };
+    if dry_run {
+        return Ok(result);
+    }
+    let bytes = client
+        .download_generated_apk(package, version_code, &result.download_id)
+        .await
+        .map_err(err)?;
+    if bytes.len() < 4 || &bytes[..4] != b"PK\x03\x04" {
+        return Err("Play's download is not a zip, so not an APK; nothing was written".to_string());
+    }
+    std::fs::write(out, &bytes).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
+    result.sha256 = Some(format!("{:x}", Sha256::digest(&bytes)));
+    result.bytes = Some(bytes.len());
+    Ok(result)
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Promoted {
@@ -1081,6 +1197,34 @@ pub async fn update_product(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn picks_the_only_universal_apk() {
+        let list = serde_json::json!({"generatedApks": [{
+            "certificateSha256Hash": "AB12",
+            "generatedUniversalApk": {"downloadId": "id-1"},
+            "generatedSplitApks": []
+        }]});
+        assert_eq!(
+            pick_universal(&list, None).unwrap(),
+            ("AB12".to_string(), "id-1".to_string())
+        );
+        assert_eq!(pick_universal(&list, Some("ab12")).unwrap().1, "id-1");
+        assert!(pick_universal(&list, Some("ffff")).is_err());
+    }
+
+    #[test]
+    fn several_certificates_need_a_choice() {
+        let list = serde_json::json!({"generatedApks": [
+            {"certificateSha256Hash": "AA", "generatedUniversalApk": {"downloadId": "a"}},
+            {"certificateSha256Hash": "BB", "generatedUniversalApk": {"downloadId": "b"}}
+        ]});
+        assert!(pick_universal(&list, None)
+            .unwrap_err()
+            .contains("--certificate"));
+        assert_eq!(pick_universal(&list, Some("BB")).unwrap().1, "b");
+        assert!(pick_universal(&serde_json::json!({}), None).is_err());
+    }
 
     #[test]
     fn image_types_parse_in_both_spellings() {

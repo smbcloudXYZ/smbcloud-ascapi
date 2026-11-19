@@ -195,6 +195,12 @@ enum PlayCommand {
         #[command(subcommand)]
         command: PlayBundlesCommand,
     },
+    /// APKs Play generated from an uploaded bundle, including the universal
+    /// APK signed with Play's app signing key that other stores ask for.
+    GeneratedApks {
+        #[command(subcommand)]
+        command: PlayGeneratedApksCommand,
+    },
     /// One-time products (in-app products): list, read, create, update, activate, deactivate.
     Products {
         #[command(subcommand)]
@@ -749,6 +755,34 @@ enum PlayBundlesCommand {
 }
 
 #[derive(Subcommand)]
+enum PlayGeneratedApksCommand {
+    /// The generated APKs for a version code, one entry per signing
+    /// certificate, as Play returns them.
+    List {
+        package: String,
+        #[arg(long)]
+        version_code: u64,
+    },
+    /// Download the universal APK for a version code. It is signed with the
+    /// app signing key Play holds, not the upload key, which is what Xiaomi
+    /// GetApps (PSV) and other stores ask for. The version code must be a
+    /// bundle Play has processed; a draft release on internal testing is
+    /// enough. Refuses to overwrite `--out`. With `--dry-run` it lists and
+    /// writes nothing.
+    DownloadUniversal {
+        package: String,
+        #[arg(long)]
+        version_code: u64,
+        /// Where to write the APK.
+        #[arg(long)]
+        out: PathBuf,
+        /// SHA-256 of the signing certificate, when Play lists more than one.
+        #[arg(long)]
+        certificate: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum PlayProductsCommand {
     /// Every one-time product of the app.
     List { package: String },
@@ -885,6 +919,41 @@ enum AmazonTargetingCommand {
 }
 
 #[derive(Subcommand)]
+enum XiaomiCommand {
+    /// Orders in a window of up to 30 days (POST /third-api/order/v1/query).
+    /// Xiaomi must allowlist the account first (overseas-dev@xiaomi.com);
+    /// without it GetApps answers 999 "does not have … permission". At most
+    /// one request a second. With `--dry-run` the signed request is printed
+    /// instead of sent.
+    Orders {
+        /// Comma-separated package names; defaults to XIAOMI_PACKAGE.
+        #[arg(long)]
+        packages: Option<String>,
+        /// Start: Unix seconds or YYYY-MM-DD (00:00 UTC).
+        #[arg(long)]
+        start: String,
+        /// End: Unix seconds or YYYY-MM-DD (00:00 UTC). After the start.
+        #[arg(long)]
+        end: String,
+        /// Comma-separated pricing regions, e.g. RO,ES.
+        #[arg(long)]
+        regions: Option<String>,
+        /// Comma-separated payment states: 1 click to pay, 2 paid, 3 closed,
+        /// 4 refund pending, 5 refund started, 6 refunded.
+        #[arg(long)]
+        pay_status: Option<String>,
+        /// 0 normal, 1 test, 2 promotion, 3 incentive.
+        #[arg(long)]
+        pay_type: Option<i64>,
+    },
+    /// The APK upload address for XIAOMI_PACKAGE
+    /// (GET /third-api/apk/v1/getUploadUrl). Uploads nothing. Useful as a
+    /// credentials and signature check; signed URLs in the answer are cut to
+    /// scheme, host and path.
+    UploadUrl,
+}
+
+#[derive(Subcommand)]
 #[allow(clippy::large_enum_variant)]
 enum MsStoreCommand {
     /// The app record, including its pending submission when a draft exists.
@@ -927,6 +996,10 @@ enum MsStoreSubmissionsCommand {
         #[arg(long)]
         product_id: Option<String>,
         /// Refuse unless a shipping package has this version, e.g. 1.3.2.0.
+        /// Before the commit, an uploaded package still pending ingestion has
+        /// no version in Partner Center, so it is matched by the version in
+        /// its file name (siGit-1.3.2.0.msix). After the commit the Store's
+        /// own version is compared exactly and a mismatch is an error.
         #[arg(long)]
         expect_package_version: Option<String>,
         /// How long to wait for the status to leave CommitStarted.
@@ -1048,6 +1121,18 @@ enum Command {
         msstore_env: Option<PathBuf>,
         #[command(subcommand)]
         command: MsStoreCommand,
+    },
+    /// Xiaomi GetApps: order queries and the APK upload address, through the
+    /// signed developer interface. Uses the app's App ID and App Secret from
+    /// the console, not the App Store Connect key. Listing, upload and
+    /// submission are done in the console.
+    Xiaomi {
+        /// Dotenv file with the XIAOMI_* credentials. Falls back to
+        /// `XIAOMI_ENV_PATH`, then to the XIAOMI_* variables themselves.
+        #[arg(long, global = true)]
+        xiaomi_env: Option<PathBuf>,
+        #[command(subcommand)]
+        command: XiaomiCommand,
     },
     /// Look up apps by bundle ID, or a specific app by its ASC app ID.
     Apps {
@@ -1463,6 +1548,43 @@ async fn run_amazon(
                 )
             }
         },
+    }
+}
+
+async fn run_xiaomi(
+    env_path: Option<&std::path::Path>,
+    command: XiaomiCommand,
+    dry_run: bool,
+) -> Result<()> {
+    use smbcloud_ascapi_frontend::xiaomi;
+    let client = xiaomi::xiaomi_client(env_path).map_err(|e| anyhow::anyhow!(e))?;
+    let fail = |e: String| anyhow::anyhow!(e);
+    match command {
+        XiaomiCommand::Orders {
+            packages,
+            start,
+            end,
+            regions,
+            pay_status,
+            pay_type,
+        } => {
+            let query = smbcloud_ascapi_xiaomi::OrderQuery {
+                pkgs: packages.unwrap_or_else(|| client.package().to_string()),
+                regions,
+                pay_status,
+                pay_type,
+                start_timestamp: xiaomi::parse_time(&start).map_err(fail)?,
+                end_timestamp: xiaomi::parse_time(&end).map_err(fail)?,
+            };
+            print_json(
+                &xiaomi::orders(&client, &query, dry_run)
+                    .await
+                    .map_err(fail)?,
+            )
+        }
+        XiaomiCommand::UploadUrl => {
+            print_json(&xiaomi::upload_url(&client, dry_run).await.map_err(fail)?)
+        }
     }
 }
 
@@ -1886,6 +2008,33 @@ async fn run_play(
                 .map_err(fail)?;
                 print_json(&result)
             }
+        },
+        PlayCommand::GeneratedApks { command } => match command {
+            PlayGeneratedApksCommand::List {
+                package,
+                version_code,
+            } => print_json(
+                &play::read_generated_apks(&client, &package, version_code)
+                    .await
+                    .map_err(fail)?,
+            ),
+            PlayGeneratedApksCommand::DownloadUniversal {
+                package,
+                version_code,
+                out,
+                certificate,
+            } => print_json(
+                &play::download_universal_apk(
+                    &client,
+                    &package,
+                    version_code,
+                    &out,
+                    certificate.as_deref(),
+                    dry_run,
+                )
+                .await
+                .map_err(fail)?,
+            ),
         },
         PlayCommand::Products { command } => match command {
             PlayProductsCommand::List { package } => {
@@ -3358,6 +3507,14 @@ async fn main() -> Result<()> {
         return run_msstore(msstore_env.as_deref(), command, cli.dry_run).await;
     }
 
+    if let Some(Command::Xiaomi {
+        xiaomi_env,
+        command,
+    }) = cli.command
+    {
+        return run_xiaomi(xiaomi_env.as_deref(), command, cli.dry_run).await;
+    }
+
     let key_id = cli
         .key_id
         .clone()
@@ -3392,6 +3549,7 @@ async fn main() -> Result<()> {
         Command::AppGallery { .. }
         | Command::Amazon { .. }
         | Command::Msstore { .. }
+        | Command::Xiaomi { .. }
         | Command::Play { .. }
         | Command::Admob { .. } => {
             unreachable!("handled before App Store Connect credentials")

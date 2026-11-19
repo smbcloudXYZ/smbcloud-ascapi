@@ -37,6 +37,7 @@ pub mod release_controls;
 pub mod review;
 pub mod time;
 pub mod upload;
+pub mod xiaomi;
 
 pub use attach_build::{attach_build, AttachedBuild};
 pub use await_processing::{
