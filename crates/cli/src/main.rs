@@ -206,6 +206,57 @@ enum PlayCommand {
         #[command(subcommand)]
         command: PlayProductsCommand,
     },
+    /// Auto-renewing subscriptions: list, read, create. The subscription's
+    /// icon has no API; upload it in Play Console.
+    Subscriptions {
+        #[command(subcommand)]
+        command: PlaySubscriptionsCommand,
+    },
+}
+
+// Create carries many flags; boxing a clap subcommand field is not possible.
+#[allow(clippy::large_enum_variant)]
+#[derive(Subcommand)]
+enum PlaySubscriptionsCommand {
+    /// Every subscription of the app, with its base plans and their state.
+    List { package: String },
+    /// One subscription by id, in full.
+    Get { package: String, product_id: String },
+    /// Create a subscription with one auto-renewing base plan, price it in
+    /// every region from one price, and activate the base plan. Refuses an id
+    /// that exists. With `--dry-run` it prints the body and sends nothing.
+    Create {
+        package: String,
+        #[arg(long)]
+        id: String,
+        /// Shown on Play (at most 55 characters).
+        #[arg(long)]
+        title: String,
+        /// At most 200 characters; Play does not show it to buyers.
+        #[arg(long)]
+        description: Option<String>,
+        /// One benefit (at most 40 characters); repeat for up to four.
+        #[arg(long)]
+        benefit: Vec<String>,
+        /// Price in `--currency` per billing period, for example 14.99.
+        #[arg(long)]
+        price: String,
+        #[arg(long, default_value = "USD")]
+        currency: String,
+        /// Language of the listing; the app's default language.
+        #[arg(long)]
+        language: String,
+        /// Base plan id (lowercase letters, digits and -).
+        #[arg(long, default_value = "monthly")]
+        base_plan_id: String,
+        /// ISO 8601 billing period: P1W, P1M, P3M, P6M, P1Y.
+        #[arg(long, default_value = "P1M")]
+        billing_period: String,
+        /// ISO 8601 grace period after a failed renewal, e.g. P3D. Leave it
+        /// off for Play's default.
+        #[arg(long)]
+        grace_period: Option<String>,
+    },
 }
 
 // The update commands carry many flags; boxing a clap subcommand field is not
@@ -972,6 +1023,39 @@ enum MsStoreCommand {
         #[command(subcommand)]
         command: MsStoreListingsCommand,
     },
+    /// Add-ons (in-app products and subscriptions): list them and set their
+    /// 300x300 store logo. Writes go into the add-on's pending submission and
+    /// never commit it.
+    Addons {
+        #[command(subcommand)]
+        command: MsStoreAddonsCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum MsStoreAddonsCommand {
+    /// Every add-on of the app: Store id, product id, type, pending draft.
+    List {
+        /// Store product id of the app; defaults to MSSTORE_PRODUCT_ID.
+        #[arg(long)]
+        product_id: Option<String>,
+    },
+    /// Put a 300x300 PNG on an add-on's listing(s) as its logo, in the
+    /// pending add-on submission (created from the last published one when
+    /// there is none). Submit it in Partner Center afterwards.
+    SetIcon {
+        /// The add-on, by Store id or by the product id the app buys with
+        /// (e.g. personal_pro_monthly).
+        addon: String,
+        #[arg(long)]
+        file: PathBuf,
+        /// Only this listing locale (e.g. en-us); every listing by default.
+        #[arg(long)]
+        locale: Option<String>,
+        /// Store product id of the app; defaults to MSSTORE_PRODUCT_ID.
+        #[arg(long)]
+        product_id: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1196,6 +1280,12 @@ enum Command {
     InAppPurchases {
         #[command(subcommand)]
         command: InAppPurchasesCommand,
+    },
+    /// Auto-renewable subscriptions: list them through their groups and
+    /// upload each one's promotional image.
+    Subscriptions {
+        #[command(subcommand)]
+        command: SubscriptionsCommand,
     },
     /// Signing certificates: list what the team holds, issue a new one, or
     /// revoke an old one.
@@ -1602,6 +1692,34 @@ async fn run_msstore(
                 .await
                 .map_err(fail)?,
         ),
+        MsStoreCommand::Addons { command } => match command {
+            MsStoreAddonsCommand::List { product_id } => print_json(
+                &msstore::read_addons(&client, product_id.as_deref())
+                    .await
+                    .map_err(fail)?,
+            ),
+            MsStoreAddonsCommand::SetIcon {
+                addon,
+                file,
+                locale,
+                product_id,
+            } => {
+                let result = msstore::set_addon_icon(
+                    &client,
+                    product_id.as_deref(),
+                    &addon,
+                    &file,
+                    locale.as_deref(),
+                    dry_run,
+                )
+                .await
+                .map_err(fail)?;
+                if result.dry_run {
+                    println!("# dry run: nothing was changed:");
+                }
+                print_json(&result)
+            }
+        },
         MsStoreCommand::Submissions { command } => match command {
             MsStoreSubmissionsCommand::Status { product_id } => print_json(
                 &msstore::submission_status(&client, product_id.as_deref())
@@ -2035,6 +2153,54 @@ async fn run_play(
                 .await
                 .map_err(fail)?,
             ),
+        },
+        PlayCommand::Subscriptions { command } => match command {
+            PlaySubscriptionsCommand::List { package } => print_json(
+                &play::read_subscriptions(&client, &package)
+                    .await
+                    .map_err(fail)?,
+            ),
+            PlaySubscriptionsCommand::Get {
+                package,
+                product_id,
+            } => print_json(
+                &play::read_subscription(&client, &package, &product_id)
+                    .await
+                    .map_err(fail)?,
+            ),
+            PlaySubscriptionsCommand::Create {
+                package,
+                id,
+                title,
+                description,
+                benefit,
+                price,
+                currency,
+                language,
+                base_plan_id,
+                billing_period,
+                grace_period,
+            } => {
+                let price = PlayMoney::parse(&currency, &price).map_err(|e| fail(e.to_string()))?;
+                let subscription = smbcloud_ascapi_play::NewSubscription {
+                    grace_period,
+                    package,
+                    product_id: id,
+                    language,
+                    title,
+                    description,
+                    benefits: benefit,
+                    base_plan_id,
+                    billing_period,
+                };
+                let result = play::create_subscription(&client, &subscription, &price, dry_run)
+                    .await
+                    .map_err(fail)?;
+                if result.dry_run {
+                    println!("# dry run: nothing was created; body that would be sent:");
+                }
+                print_json(&result)
+            }
         },
         PlayCommand::Products { command } => match command {
             PlayProductsCommand::List { package } => {
@@ -2945,6 +3111,29 @@ enum ReviewSubmissionsCommand {
     /// `PATCH /v1/reviewSubmissions/{id}` with `canceled: true` — withdraw
     /// a submission before App Review picks it up.
     Cancel { id: String },
+    /// `GET /v1/reviewSubmissions/{id}/items`: what a submission holds (the
+    /// version, events, product page versions) and each item's state. Use
+    /// it on a submission stuck in UNRESOLVED_ISSUES. The reviewer's message
+    /// itself is not in the API; read it in App Store Connect.
+    Items { id: String },
+}
+
+#[derive(Subcommand)]
+enum SubscriptionsCommand {
+    /// Every auto-renewable subscription of an app, across its subscription
+    /// groups, ordered by group level (1 = highest level of service).
+    List { app_id: String },
+    /// The promotional images a subscription holds.
+    Images { id: String },
+    /// Upload the 1024x1024 image the App Store shows for the subscription.
+    /// A subscription can hold several; --replace deletes the existing ones
+    /// first.
+    PromotionalImage {
+        id: String,
+        path: PathBuf,
+        #[arg(long)]
+        replace: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -3578,6 +3767,9 @@ async fn main() -> Result<()> {
         Command::InAppPurchases { command } => {
             run_in_app_purchases(&client, command, cli.dry_run).await
         }
+        Command::Subscriptions { command } => {
+            run_subscriptions(&client, command, cli.dry_run).await
+        }
         Command::Certificates { command } => run_certificates(&client, command, cli.dry_run).await,
         Command::Profiles { command } => run_profiles(&client, command, cli.dry_run).await,
         Command::ReviewSubmissions { command } => {
@@ -4195,6 +4387,63 @@ async fn run_review_submissions(
                 return Ok(());
             }
             print_json(&client.cancel_review_submission(&id).await?)
+        }
+        ReviewSubmissionsCommand::Items { id } => {
+            print_json(&client.list_review_submission_items(&id).await?)
+        }
+    }
+}
+
+async fn run_subscriptions(
+    client: &Client,
+    command: SubscriptionsCommand,
+    dry_run: bool,
+) -> Result<()> {
+    match command {
+        SubscriptionsCommand::List { app_id } => {
+            print_json(&client.list_app_subscriptions(&app_id).await?)
+        }
+        SubscriptionsCommand::Images { id } => {
+            print_json(&client.list_subscription_images(&id).await?)
+        }
+        SubscriptionsCommand::PromotionalImage { id, path, replace } => {
+            let bytes =
+                std::fs::read(&path).with_context(|| format!("cannot read {}", path.display()))?;
+            let file_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .context("the image path has no file name")?
+                .to_string();
+            let existing = client.list_subscription_images(&id).await?;
+            if !existing.is_empty() && !replace {
+                anyhow::bail!(
+                    "{id} already has {} promotional image(s); pass --replace",
+                    existing.len()
+                );
+            }
+            if dry_run {
+                println!(
+                    "# dry run: would {}upload {file_name} ({} bytes) as the image of subscription {id}",
+                    if existing.is_empty() { "" } else { "delete the current images and " },
+                    bytes.len()
+                );
+                return Ok(());
+            }
+            for old in &existing {
+                client.delete_subscription_image(&old.id).await?;
+            }
+            let uploaded = client
+                .upload_subscription_image(&id, file_name, bytes)
+                .await?;
+            let back = client.list_subscription_images(&id).await?;
+            if !back.iter().any(|i| i.id == uploaded.id) {
+                anyhow::bail!(
+                    "the image was committed but {} does not list it ({})",
+                    id,
+                    uploaded.id
+                );
+            }
+            print_json(&back)
         }
     }
 }

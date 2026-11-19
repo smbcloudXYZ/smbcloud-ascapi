@@ -179,8 +179,16 @@ impl ReviewSubmissionsApi for Client {
         submission_id: &str,
     ) -> Result<Vec<ReviewSubmissionItem>> {
         let path = format!("/v1/reviewSubmissions/{submission_id}/items");
-        self.list_all::<ReviewSubmissionItemAttributes>(&path, &[])
-            .await
+        // Without `include` Apple returns only relationship links, so the
+        // caller could not tell which version or event an item points at.
+        self.list_all::<ReviewSubmissionItemAttributes>(
+            &path,
+            &[(
+                "include",
+                "appStoreVersion,appCustomProductPageVersion,appStoreVersionExperiment,appEvent",
+            )],
+        )
+        .await
     }
 
     async fn add_app_store_version_to_review_submission(
