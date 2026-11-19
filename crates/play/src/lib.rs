@@ -14,6 +14,7 @@ pub mod error;
 pub mod image;
 pub mod listing;
 pub mod product;
+pub mod subscription;
 pub mod track;
 
 pub use auth::ServiceAccount;
@@ -26,4 +27,5 @@ pub use listing::{
     SHORT_DESCRIPTION_MAX_LEN, TITLE_MAX_LEN,
 };
 pub use product::{Money, NewProduct, ProductChanges};
+pub use subscription::NewSubscription;
 pub use track::{LocalizedText, PromotePlan, RolloutAction, RolloutPlan, Track, TrackRelease};

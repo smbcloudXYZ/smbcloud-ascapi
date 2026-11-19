@@ -1024,6 +1024,115 @@ pub async fn create_product(
     })
 }
 
+/// Every auto-renewing subscription of the app, one summary row each.
+pub async fn read_subscriptions(
+    client: &PlayClient,
+    package: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    let all = client.list_subscriptions(package).await.map_err(err)?;
+    Ok(all
+        .iter()
+        .map(smbcloud_ascapi_play::subscription::summary)
+        .collect())
+}
+
+/// One subscription by id, as Play stores it.
+pub async fn read_subscription(
+    client: &PlayClient,
+    package: &str,
+    product_id: &str,
+) -> Result<serde_json::Value, String> {
+    client
+        .get_subscription(package, product_id)
+        .await
+        .map_err(err)
+}
+
+/// The result of creating a subscription.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubscriptionCreated {
+    pub dry_run: bool,
+    /// The subscription body that is sent (dry run) or was sent.
+    pub sent: serde_json::Value,
+    /// The subscription as Play stores it, read back after activation.
+    /// `None` on a dry run.
+    pub stored: Option<serde_json::Value>,
+}
+
+/// Create an auto-renewing subscription with one base plan priced in one
+/// currency and converted to every region, then activate the base plan.
+/// Refuses a product id that already exists. A dry run converts prices (a
+/// read) and sends nothing.
+pub async fn create_subscription(
+    client: &PlayClient,
+    subscription: &smbcloud_ascapi_play::NewSubscription,
+    price: &Money,
+    dry_run: bool,
+) -> Result<SubscriptionCreated, String> {
+    use smbcloud_ascapi_play::subscription::{
+        base_plan_state, check_applied, converted_regions_version, subscription_body,
+    };
+
+    subscription.check().map_err(err)?;
+    let package = subscription.package.as_str();
+    let id = subscription.product_id.as_str();
+    match client.get_subscription(package, id).await {
+        Ok(_) => {
+            return Err(format!(
+                "{id} already exists in {package}; it was left alone"
+            ))
+        }
+        Err(smbcloud_ascapi_play::Error::Api { status: 404, .. }) => {}
+        Err(e) => return Err(err(e)),
+    }
+    let converted = client
+        .convert_region_prices(package, price)
+        .await
+        .map_err(err)?;
+    let body = subscription_body(subscription, &converted).map_err(err)?;
+    if dry_run {
+        return Ok(SubscriptionCreated {
+            dry_run,
+            sent: body,
+            stored: None,
+        });
+    }
+    let version = converted_regions_version(&converted).map_err(err)?;
+    client
+        .create_subscription(package, id, &body, &version)
+        .await
+        .map_err(with_billing_hint)?;
+    client
+        .activate_base_plan(package, id, &subscription.base_plan_id)
+        .await
+        .map_err(|e| {
+            format!(
+                "created {id}, but activating base plan {} failed: {}",
+                subscription.base_plan_id,
+                with_billing_hint(e)
+            )
+        })?;
+    let stored = client
+        .get_subscription(package, id)
+        .await
+        .map_err(|e| format!("created {id}, but reading it back failed: {}", err(e)))?;
+    check_applied(&stored, &body)?;
+    let state = base_plan_state(&stored, &subscription.base_plan_id);
+    if state != Some("ACTIVE") {
+        return Err(format!(
+            "created {id}, but base plan {} is {} and not ACTIVE",
+            subscription.base_plan_id,
+            state.unwrap_or("missing")
+        ));
+    }
+    Ok(SubscriptionCreated {
+        dry_run,
+        sent: body,
+        stored: Some(stored),
+    })
+}
+
 /// The result of activating or deactivating a purchase option.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

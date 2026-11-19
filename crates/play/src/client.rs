@@ -30,6 +30,11 @@ pub(crate) fn products_path(package: &str, suffix: &str) -> String {
     format!("/androidpublisher/v3/applications/{package}/oneTimeProducts{suffix}")
 }
 
+/// Build `/androidpublisher/v3/applications/{package}/subscriptions…`.
+pub(crate) fn subscriptions_path(package: &str, suffix: &str) -> String {
+    format!("/androidpublisher/v3/applications/{package}/subscriptions{suffix}")
+}
+
 /// `onetimeproducts.patch` is the one call in this resource whose path is
 /// all lowercase (`onetimeproducts`); get, list and the state changes use
 /// `oneTimeProducts`. Google's discovery document says so, and a wrong case is
@@ -487,6 +492,81 @@ impl PlayClient {
             None::<&()>,
         )
         .await
+    }
+
+    /// All auto-renewing subscriptions of the app, following `nextPageToken`.
+    pub async fn list_subscriptions(&self, package: &str) -> Result<Vec<serde_json::Value>> {
+        let mut subscriptions = Vec::new();
+        let mut page_token: Option<String> = None;
+        loop {
+            let suffix = match &page_token {
+                Some(token) => format!("?pageToken={token}"),
+                None => String::new(),
+            };
+            // Like products, an app with none can answer with an empty body.
+            let text = self
+                .send(Method::GET, &subscriptions_path(package, &suffix), None)
+                .await?
+                .text()
+                .await?;
+            if text.trim().is_empty() {
+                break;
+            }
+            let page: serde_json::Value = serde_json::from_str(&text)?;
+            if let Some(items) = page.get("subscriptions").and_then(|v| v.as_array()) {
+                subscriptions.extend(items.iter().cloned());
+            }
+            match page.get("nextPageToken").and_then(|v| v.as_str()) {
+                Some(token) if !token.is_empty() => page_token = Some(token.to_string()),
+                _ => break,
+            }
+        }
+        Ok(subscriptions)
+    }
+
+    pub async fn get_subscription(
+        &self,
+        package: &str,
+        product_id: &str,
+    ) -> Result<serde_json::Value> {
+        self.json(
+            Method::GET,
+            &subscriptions_path(package, &format!("/{product_id}")),
+            None::<&()>,
+        )
+        .await
+    }
+
+    /// `monetization.subscriptions.create`. Fails if the product id exists.
+    /// `regions_version` is the one the prices were converted against.
+    pub async fn create_subscription(
+        &self,
+        package: &str,
+        product_id: &str,
+        body: &serde_json::Value,
+        regions_version: &str,
+    ) -> Result<serde_json::Value> {
+        let path = format!(
+            "{}?productId={product_id}&regionsVersion.version={}",
+            subscriptions_path(package, ""),
+            regions_version.replace('/', "%2F"),
+        );
+        self.json(Method::POST, &path, Some(body)).await
+    }
+
+    /// `basePlans.activate`: what makes a subscription's base plan buyable.
+    pub async fn activate_base_plan(
+        &self,
+        package: &str,
+        product_id: &str,
+        base_plan_id: &str,
+    ) -> Result<serde_json::Value> {
+        let path = subscriptions_path(
+            package,
+            &format!("/{product_id}/basePlans/{base_plan_id}:activate"),
+        );
+        let body = crate::subscription::activate_body(package, product_id, base_plan_id);
+        self.json(Method::POST, &path, Some(&body)).await
     }
 
     /// `pricing:convertRegionPrices`: one price in, a price for every region out.
