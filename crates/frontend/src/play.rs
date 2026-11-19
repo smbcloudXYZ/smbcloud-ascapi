@@ -696,7 +696,8 @@ pub async fn download_universal_apk(
     certificate: Option<&str>,
     dry_run: bool,
 ) -> Result<UniversalApk, String> {
-    if out.exists() {
+    // A dry run writes nothing, so an existing file is no reason to stop it.
+    if !dry_run && out.exists() {
         return Err(format!("{} exists; not overwriting it", out.display()));
     }
     let list = read_generated_apks(client, package, version_code).await?;
