@@ -25,7 +25,7 @@ pub enum Error {
 
     /// A non-2xx HTTP status.
     #[error("GetApps returned HTTP {status}: {detail}")]
-    Http2xx { status: u16, detail: String },
+    HttpStatus { status: u16, detail: String },
 
     /// HTTP 200 with a `code` other than 200 in the envelope. 999 is a header
     /// or permission problem, 1001/1002/3001/3002 are signature problems.

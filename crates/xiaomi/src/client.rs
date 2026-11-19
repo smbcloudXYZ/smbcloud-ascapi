@@ -161,13 +161,16 @@ impl XiaomiClient {
         }
         let response = request.send().await?;
         let status = response.status();
-        let text = response.text().await.unwrap_or_default();
         if !status.is_success() {
-            return Err(Error::Http2xx {
+            // The status is the news here. A body that can't be read only
+            // costs the detail, so don't let it hide the status.
+            return Err(Error::HttpStatus {
                 status: status.as_u16(),
-                detail: text,
+                detail: response.text().await.unwrap_or_default(),
             });
         }
+        // On success a failed read is a transport error and says so.
+        let text = response.text().await?;
         unwrap_envelope(serde_json::from_str(&text)?)
     }
 
