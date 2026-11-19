@@ -92,7 +92,7 @@ jobs:
       - name: Check the lower crates build alone
         shell: bash
         run: |
-          for crate in core aso pricing iap signing reports play appgallery msstore admob amazon; do
+          for crate in core aso pricing iap signing reports play appgallery msstore admob amazon xiaomi; do
             cargo check -p "smbcloud-ascapi-${crate}" --locked
           done
 
@@ -135,8 +135,8 @@ jobs:
 
           # Dependency order: a crate can only be published once everything it
           # depends on is on crates.io. core first, then the domain crates
-          # that only depend on core, then play, appgallery, msstore, admob
-          # and amazon (which depend on no other workspace crate), then
+          # that only depend on core, then play, appgallery, msstore, admob,
+          # amazon and xiaomi (which depend on no other workspace crate), then
           # frontend, mcp, and the CLI last.
           crates=(
             core
@@ -150,6 +150,7 @@ jobs:
             msstore
             admob
             amazon
+            xiaomi
             frontend
             mcp
             cli

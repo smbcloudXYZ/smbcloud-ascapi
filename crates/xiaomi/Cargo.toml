@@ -1,0 +1,23 @@
+[package]
+name = "smbcloud-ascapi-xiaomi"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Xiaomi GetApps developer interface: HMAC-SHA1 signed requests, order queries and the APK upload address."
+readme = "README.md"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+base64 = { workspace = true }
+hmac = "0.12"
+md5 = "0.7"
+rand = { workspace = true }
+reqwest = { workspace = true, features = ["json", "rustls-tls-native-roots"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha1 = "0.10"
+thiserror = { workspace = true }

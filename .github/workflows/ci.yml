@@ -69,7 +69,7 @@ jobs:
         # core with the MCP server's dependencies already in the graph and
         # tell us nothing.
         run: |
-          for crate in core aso pricing iap signing reports play appgallery msstore admob amazon; do
+          for crate in core aso pricing iap signing reports play appgallery msstore admob amazon xiaomi; do
             cargo check --package "smbcloud-ascapi-${crate}" --locked
           done
 
