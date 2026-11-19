@@ -98,6 +98,32 @@ pub(crate) fn product_update_path(
     path
 }
 
+/// `GET` target for `generatedapks.list`: the APKs Play generated from the
+/// bundle with this version code, one entry per signing certificate.
+pub(crate) fn generated_apks_path(package: &str, version_code: u64) -> String {
+    format!("/androidpublisher/v3/applications/{package}/generatedApks/{version_code}")
+}
+
+/// `GET` target for `generatedapks.download`, as media. The download id is
+/// percent-encoded: it is opaque and may hold `/`, `+` or `=`.
+pub(crate) fn generated_apk_download_path(
+    package: &str,
+    version_code: u64,
+    download_id: &str,
+) -> String {
+    let mut id = String::with_capacity(download_id.len());
+    for b in download_id.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            id.push(b as char);
+        } else {
+            id.push_str(&format!("%{b:02X}"));
+        }
+    }
+    format!(
+        "/androidpublisher/v3/applications/{package}/generatedApks/{version_code}/downloads/{id}:download?alt=media"
+    )
+}
+
 pub struct PlayClient {
     http: reqwest::Client,
     account: ServiceAccount,
@@ -348,6 +374,42 @@ impl PlayClient {
         Ok(response.json().await?)
     }
 
+    /// The APKs Play generated for a version code, as Play returns them:
+    /// `{"generatedApks": [{"certificateSha256Hash", "generatedUniversalApk":
+    /// {"downloadId"}, "generatedSplitApks", …}]}`. Needs no edit.
+    pub async fn list_generated_apks(
+        &self,
+        package: &str,
+        version_code: u64,
+    ) -> Result<serde_json::Value> {
+        let text = self
+            .send(
+                Method::GET,
+                &generated_apks_path(package, version_code),
+                None,
+            )
+            .await?
+            .text()
+            .await?;
+        if text.trim().is_empty() {
+            return Ok(serde_json::json!({}));
+        }
+        Ok(serde_json::from_str(&text)?)
+    }
+
+    /// Download one generated APK. A universal APK is signed with the app
+    /// signing key Play holds, which is what other stores ask for.
+    pub async fn download_generated_apk(
+        &self,
+        package: &str,
+        version_code: u64,
+        download_id: &str,
+    ) -> Result<Vec<u8>> {
+        let path = generated_apk_download_path(package, version_code, download_id);
+        let response = self.send(Method::GET, &path, None).await?;
+        Ok(response.bytes().await?.to_vec())
+    }
+
     /// Attach a ProGuard/R8 `mapping.txt` to an uploaded version code.
     pub async fn upload_deobfuscation(
         &self,
@@ -557,6 +619,18 @@ impl PlayClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_apk_paths() {
+        assert_eq!(
+            generated_apks_path("com.example.app", 2026111110),
+            "/androidpublisher/v3/applications/com.example.app/generatedApks/2026111110"
+        );
+        assert_eq!(
+            generated_apk_download_path("com.example.app", 7, "Ab+c/d=_-"),
+            "/androidpublisher/v3/applications/com.example.app/generatedApks/7/downloads/Ab%2Bc%2Fd%3D_-:download?alt=media"
+        );
+    }
 
     #[test]
     fn edit_urls_follow_the_v3_layout() {

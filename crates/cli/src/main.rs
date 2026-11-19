@@ -195,6 +195,12 @@ enum PlayCommand {
         #[command(subcommand)]
         command: PlayBundlesCommand,
     },
+    /// APKs Play generated from an uploaded bundle, including the universal
+    /// APK signed with Play's app signing key that other stores ask for.
+    GeneratedApks {
+        #[command(subcommand)]
+        command: PlayGeneratedApksCommand,
+    },
     /// One-time products (in-app products): list, read, create, update, activate, deactivate.
     Products {
         #[command(subcommand)]
@@ -745,6 +751,34 @@ enum PlayBundlesCommand {
         /// bundle for.
         #[arg(long)]
         ack_install_warning: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum PlayGeneratedApksCommand {
+    /// The generated APKs for a version code, one entry per signing
+    /// certificate, as Play returns them.
+    List {
+        package: String,
+        #[arg(long)]
+        version_code: u64,
+    },
+    /// Download the universal APK for a version code. It is signed with the
+    /// app signing key Play holds, not the upload key, which is what Xiaomi
+    /// GetApps (PSV) and other stores ask for. The version code must be a
+    /// bundle Play has processed; a draft release on internal testing is
+    /// enough. Refuses to overwrite `--out`. With `--dry-run` it lists and
+    /// writes nothing.
+    DownloadUniversal {
+        package: String,
+        #[arg(long)]
+        version_code: u64,
+        /// Where to write the APK.
+        #[arg(long)]
+        out: PathBuf,
+        /// SHA-256 of the signing certificate, when Play lists more than one.
+        #[arg(long)]
+        certificate: Option<String>,
     },
 }
 
@@ -1886,6 +1920,33 @@ async fn run_play(
                 .map_err(fail)?;
                 print_json(&result)
             }
+        },
+        PlayCommand::GeneratedApks { command } => match command {
+            PlayGeneratedApksCommand::List {
+                package,
+                version_code,
+            } => print_json(
+                &play::read_generated_apks(&client, &package, version_code)
+                    .await
+                    .map_err(fail)?,
+            ),
+            PlayGeneratedApksCommand::DownloadUniversal {
+                package,
+                version_code,
+                out,
+                certificate,
+            } => print_json(
+                &play::download_universal_apk(
+                    &client,
+                    &package,
+                    version_code,
+                    &out,
+                    certificate.as_deref(),
+                    dry_run,
+                )
+                .await
+                .map_err(fail)?,
+            ),
         },
         PlayCommand::Products { command } => match command {
             PlayProductsCommand::List { package } => {
