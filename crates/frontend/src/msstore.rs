@@ -492,6 +492,34 @@ pub struct Committed {
     pub status_after: Option<String>,
 }
 
+/// The post-commit outcome, given the status after the wait and the versions
+/// the Store reports (empty when they could not be read). Returns the versions
+/// worth reporting, or `None` when the result is not known yet, or an error on
+/// a genuine version mismatch after the commit.
+///
+/// While the status is still `CommitStarted` the new package is not ingested,
+/// so any versions the Store reports are the pre-commit ones. The outcome is
+/// unknown then, never a mismatch.
+fn post_commit_check(
+    id: &str,
+    current: &str,
+    after_versions: Vec<String>,
+    expected: Option<&str>,
+) -> Result<Option<Vec<String>>, String> {
+    if current == "CommitStarted" {
+        return Ok(None);
+    }
+    if let Some(expected) = expected {
+        if !after_versions.is_empty() && !after_versions.iter().any(|v| v == expected) {
+            return Err(format!(
+                "submission {id} was committed (status {current}) but carries package versions [{}], not {expected}",
+                after_versions.join(", ")
+            ));
+        }
+    }
+    Ok((!after_versions.is_empty()).then_some(after_versions))
+}
+
 /// Commit the pending submission to certification.
 ///
 /// Fails closed before writing when there is no pending submission or, with
@@ -559,20 +587,22 @@ pub async fn commit_pending(
             ));
         }
         if current != "CommitStarted" || std::time::Instant::now() >= deadline {
-            // The Store has ingested the packages by now, so `version` is
-            // there and the strict comparison applies. An empty list means
-            // the wait ran out first: unknown, not a mismatch.
-            let after = client.get_submission(product_id, &id).await.map_err(err)?;
-            let after_versions = package_versions(&after);
-            if let Some(expected) = expect_package_version {
-                if !after_versions.is_empty() && !after_versions.iter().any(|v| v == expected) {
-                    return Err(format!(
-                        "submission {id} was committed (status {current}) but carries package versions [{}], not {expected}",
-                        after_versions.join(", ")
-                    ));
+            // Still CommitStarted means the wait ran out before ingestion, so
+            // the Store has no post-commit versions yet and there is nothing
+            // to read or check. Once it has left CommitStarted the packages
+            // are ingested and `version` is authoritative; the commit already
+            // succeeded, so a failed read here is reported as unknown, not as
+            // a commit failure.
+            let after_versions = if current == "CommitStarted" {
+                Vec::new()
+            } else {
+                match client.get_submission(product_id, &id).await {
+                    Ok(after) => package_versions(&after),
+                    Err(_) => return Ok(result(false, Some(current), None)),
                 }
-            }
-            let reported = (!after_versions.is_empty()).then_some(after_versions);
+            };
+            let reported =
+                post_commit_check(&id, &current, after_versions, expect_package_version)?;
             return Ok(result(false, Some(current), reported));
         }
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
@@ -643,6 +673,55 @@ mod tests {
     fn ingested_package_is_still_checked_by_version() {
         assert!(check_expected_version(&submission(), "1.3.2.0").is_ok());
         assert!(check_expected_version(&submission(), "1.3.1.0").is_err());
+    }
+
+    #[test]
+    fn still_committing_reports_unknown_not_a_mismatch() {
+        // The deadline ran out while an older package version is carried over
+        // and the new one is not ingested yet: unknown, never a false
+        // mismatch, and nothing stale reported as the post-commit result.
+        let r = post_commit_check(
+            "s1",
+            "CommitStarted",
+            vec!["1.3.1.0".into()],
+            Some("1.3.2.0"),
+        );
+        assert_eq!(r, Ok(None));
+    }
+
+    #[test]
+    fn ingested_versions_are_checked_strictly_after_the_commit() {
+        assert_eq!(
+            post_commit_check(
+                "s1",
+                "PreProcessing",
+                vec!["1.3.2.0".into()],
+                Some("1.3.2.0")
+            ),
+            Ok(Some(vec!["1.3.2.0".into()]))
+        );
+        let wrong = post_commit_check(
+            "s1",
+            "PreProcessing",
+            vec!["1.3.1.0".into()],
+            Some("1.3.2.0"),
+        )
+        .unwrap_err();
+        assert!(wrong.contains("was committed") && wrong.contains("not 1.3.2.0"));
+    }
+
+    #[test]
+    fn an_unreadable_post_commit_version_list_is_unknown() {
+        // Empty means the extra read failed or returned nothing; don't call
+        // that a mismatch.
+        assert_eq!(
+            post_commit_check("s1", "PreProcessing", vec![], Some("1.3.2.0")),
+            Ok(None)
+        );
+        assert_eq!(
+            post_commit_check("s1", "PreProcessing", vec!["1.3.2.0".into()], None),
+            Ok(Some(vec!["1.3.2.0".into()]))
+        );
     }
 
     #[test]
