@@ -95,7 +95,7 @@ impl Track {
     /// `completed` at 1.0. Any `inProgress` or `draft` release on the target
     /// is replaced. A `completed` release stays during a staged rollout,
     /// because Play needs the one serving users, and is replaced when the
-    /// promotion itself completes (see [`stays_beside`]). A target already holding the
+    /// promotion itself completes (see `stays_beside`). A target already holding the
     /// code at the same status and fraction is a no-op, a higher fraction
     /// updates it, and a lower one is an error.
     pub fn promote_from(
