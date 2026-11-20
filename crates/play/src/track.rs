@@ -71,14 +71,31 @@ pub struct RolloutPlan {
 
 const FRACTION_EPSILON: f64 = 1e-9;
 
+/// Whether an existing release stays on a track that gains a new release for
+/// `version_code`. An `inProgress` or `draft` release is always replaced, and
+/// so is anything already carrying the code. A `completed` release stays
+/// during a staged rollout (it serves the users not in the rollout), but not
+/// when the new release is itself `completed`: Play allows one completed
+/// release per track and rejects a second ("Only one completed release is
+/// allowed").
+fn stays_beside(existing: &TrackRelease, version_code: &str, new_is_completed: bool) -> bool {
+    let replaced = match existing.status.as_deref() {
+        Some("inProgress") | Some("draft") => true,
+        Some("completed") => new_is_completed,
+        _ => false,
+    };
+    !replaced && !existing.version_codes.iter().any(|c| c == version_code)
+}
+
 impl Track {
     /// Plan promoting `version_code` from `source` onto this (target) track.
     ///
     /// The new release copies the source release's name, version codes and
     /// release notes. It is `inProgress` at `user_fraction` below 1.0 and
     /// `completed` at 1.0. Any `inProgress` or `draft` release on the target
-    /// is replaced; `completed` releases stay, because Play needs the one
-    /// serving users during a staged rollout. A target already holding the
+    /// is replaced. A `completed` release stays during a staged rollout,
+    /// because Play needs the one serving users, and is replaced when the
+    /// promotion itself completes (see [`stays_beside`]). A target already holding the
     /// code at the same status and fraction is a no-op, a higher fraction
     /// updates it, and a lower one is an error.
     pub fn promote_from(
@@ -145,10 +162,7 @@ impl Track {
         let mut releases: Vec<TrackRelease> = self
             .releases
             .iter()
-            .filter(|r| {
-                !matches!(r.status.as_deref(), Some("inProgress") | Some("draft"))
-                    && !r.version_codes.iter().any(|c| c == version_code)
-            })
+            .filter(|r| stays_beside(r, version_code, full))
             .cloned()
             .collect();
         releases.insert(0, release);
@@ -165,7 +179,8 @@ impl Track {
     /// new release at `status` (`draft` or `completed`).
     ///
     /// Follows the same rule as [`Track::promote_from`]: an `inProgress` or
-    /// `draft` release is replaced, `completed` ones stay. Unmodelled fields
+    /// `draft` release is replaced, and a `completed` one too when the upload
+    /// is `completed`. Unmodelled fields
     /// on releases that stay are untouched. The new release has no notes;
     /// `tracks set-notes` adds them afterwards.
     pub fn place_uploaded(
@@ -190,10 +205,7 @@ impl Track {
         let mut releases: Vec<TrackRelease> = self
             .releases
             .iter()
-            .filter(|r| {
-                !matches!(r.status.as_deref(), Some("inProgress") | Some("draft"))
-                    && !r.version_codes.iter().any(|c| c == version_code)
-            })
+            .filter(|r| stays_beside(r, version_code, status == "completed"))
             .cloned()
             .collect();
         releases.insert(0, release);
@@ -288,8 +300,19 @@ impl Track {
                 }
             },
         }
+        let completes = release.status.as_deref() == Some("completed");
         let mut target = self.clone();
         target.releases[index] = release;
+        if completes {
+            // The release that served everyone else is superseded; Play
+            // rejects a second completed release on the track.
+            let mut position = 0;
+            target.releases.retain(|r| {
+                let keep = position == index || r.status.as_deref() != Some("completed");
+                position += 1;
+                keep
+            });
+        }
         Ok(RolloutPlan {
             noop: false,
             target,
@@ -465,6 +488,38 @@ mod tests {
         let first = &plan.target.releases[0];
         assert_eq!(first.status.as_deref(), Some("completed"));
         assert_eq!(first.user_fraction, None);
+        // Play allows one completed release per track: the old live one goes.
+        assert_eq!(plan.target.releases.len(), 1);
+        assert_eq!(first.version_codes, vec!["131".to_string()]);
+    }
+
+    #[test]
+    fn a_completed_upload_replaces_the_completed_release() {
+        let t = production(LIVE);
+        let staged = t.place_uploaded("131", "draft").unwrap();
+        assert_eq!(
+            staged.releases.len(),
+            2,
+            "a draft sits beside the live release"
+        );
+        let done = t.place_uploaded("131", "completed").unwrap();
+        assert_eq!(done.releases.len(), 1);
+        assert_eq!(done.releases[0].status.as_deref(), Some("completed"));
+        assert_eq!(done.releases[0].version_codes, vec!["131".to_string()]);
+    }
+
+    #[test]
+    fn completing_a_staged_rollout_drops_the_previous_completed_release() {
+        let staged =
+            r#"{"name":"1.3.1","versionCodes":["131"],"status":"inProgress","userFraction":0.2}"#;
+        let t = production(&format!("{staged},{LIVE}"));
+        let plan = t.rollout("131", RolloutAction::Complete).unwrap();
+        assert_eq!(plan.target.releases.len(), 1);
+        assert_eq!(plan.target.releases[0].status.as_deref(), Some("completed"));
+        assert_eq!(
+            plan.target.releases[0].version_codes,
+            vec!["131".to_string()]
+        );
     }
 
     #[test]
